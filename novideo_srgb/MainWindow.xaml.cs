@@ -1,5 +1,6 @@
 ﻿using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
@@ -18,12 +19,14 @@ namespace novideo_srgb
     public partial class MainWindow
     {
         private readonly MainViewModel _viewModel;
+        private bool _exitRequested;
+        private bool _hideToTrayPending;
 
         private ContextMenu _contextMenu;
         private NotifyIcon _notifyIcon;
         private System.Drawing.Icon _coloredIcon;
         private System.Drawing.Icon _grayIcon;
-        private MonitorData _observedMonitor;
+        private readonly List<MonitorData> _observedMonitors = new List<MonitorData>();
 
         private const int HotkeyId = 9000;
         private const int WM_HOTKEY = 0x0312;
@@ -62,8 +65,9 @@ namespace novideo_srgb
 
             var args = Environment.GetCommandLineArgs().ToList();
             args.RemoveAt(0);
+            var startedMinimized = args.Contains("-minimize");
 
-            if (args.Contains("-minimize"))
+            if (startedMinimized)
             {
                 WindowState = WindowState.Minimized;
                 Hide();
@@ -71,13 +75,35 @@ namespace novideo_srgb
 
             InitializeHotkey();
             InitializeTrayIcon();
+
+            if (startedMinimized)
+            {
+                ShowTrayTipIfNeeded();
+            }
+
+            Closing += MainWindow_Closing;
+        }
+
+        private void MainWindow_Closing(object sender, CancelEventArgs e)
+        {
+            if (_exitRequested) return;
+
+            // Clicking the window's X hides it to the tray (out of the taskbar entirely).
+            // The regular minimize button ("_") keeps standard Windows behavior (stays in the
+            // taskbar) - only this path should also hide to tray. "Exit" in the tray menu is
+            // the only way to actually quit.
+            e.Cancel = true;
+            _hideToTrayPending = true;
+            WindowState = WindowState.Minimized;
         }
 
         protected override void OnStateChanged(EventArgs e)
         {
-            if (WindowState == WindowState.Minimized)
+            if (WindowState == WindowState.Minimized && _hideToTrayPending)
             {
+                _hideToTrayPending = false;
                 Hide();
+                ShowTrayTipIfNeeded();
             }
 
             base.OnStateChanged(e);
@@ -199,6 +225,26 @@ namespace novideo_srgb
             ReapplyMonitorSettings();
         }
 
+        private void TipButton_Click(object sender, RoutedEventArgs e)
+        {
+            ShowTrayTipBalloon();
+        }
+
+        private void ShowTrayTipBalloon()
+        {
+            _notifyIcon.ShowBalloonTip(5000, "Novideo sRGB is still running",
+                "Hidden in the tray now. Click the \"^\" arrow near the clock to find the icon - " +
+                "drag it onto the taskbar to keep it visible, or double-click it to reopen.",
+                ToolTipIcon.Info);
+        }
+
+        private void ShowTrayTipIfNeeded()
+        {
+            if (_viewModel.TrayTipShown) return;
+            ShowTrayTipBalloon();
+            _viewModel.MarkTrayTipShown();
+        }
+
         private void InitializeTrayIcon()
         {
             _coloredIcon = (System.Drawing.Icon)Properties.Resources.icon.Clone();
@@ -213,8 +259,11 @@ namespace novideo_srgb
             _notifyIcon.MouseDoubleClick +=
                 delegate
                 {
+                    // Show() + WindowState alone can leave the window logically restored but
+                    // still behind other apps on screen; Activate() forces it to the foreground.
                     Show();
                     WindowState = WindowState.Normal;
+                    Activate();
                 };
 
             _contextMenu = new ContextMenu();
@@ -223,8 +272,8 @@ namespace novideo_srgb
 
             _notifyIcon.ContextMenu = _contextMenu;
 
-            _viewModel.Monitors.CollectionChanged += delegate { ObserveFirstMonitor(); };
-            ObserveFirstMonitor();
+            _viewModel.Monitors.CollectionChanged += delegate { ObserveAllMonitors(); };
+            ObserveAllMonitors();
 
             Closed += delegate
             {
@@ -235,9 +284,9 @@ namespace novideo_srgb
                 _coloredIcon.Dispose();
                 _grayIcon.Dispose();
                 _viewModel.StopDriftPoll();
-                if (_observedMonitor != null)
+                foreach (var monitor in _observedMonitors)
                 {
-                    _observedMonitor.PropertyChanged -= Monitor_PropertyChanged;
+                    monitor.PropertyChanged -= Monitor_PropertyChanged;
                 }
             };
         }
@@ -306,18 +355,19 @@ namespace novideo_srgb
             return key.ToString();
         }
 
-        private void ObserveFirstMonitor()
+        private void ObserveAllMonitors()
         {
-            if (_observedMonitor != null)
+            foreach (var monitor in _observedMonitors)
             {
-                _observedMonitor.PropertyChanged -= Monitor_PropertyChanged;
+                monitor.PropertyChanged -= Monitor_PropertyChanged;
             }
 
-            _observedMonitor = _viewModel.Monitors.FirstOrDefault();
+            _observedMonitors.Clear();
+            _observedMonitors.AddRange(_viewModel.Monitors);
 
-            if (_observedMonitor != null)
+            foreach (var monitor in _observedMonitors)
             {
-                _observedMonitor.PropertyChanged += Monitor_PropertyChanged;
+                monitor.PropertyChanged += Monitor_PropertyChanged;
             }
 
             UpdateTrayIconState();
@@ -333,15 +383,18 @@ namespace novideo_srgb
 
         private void UpdateTrayIconState()
         {
-            if (_observedMonitor == null)
+            if (_viewModel.Monitors.Count == 0)
             {
                 _notifyIcon.Icon = _grayIcon;
                 _notifyIcon.Text = "Novideo sRGB - no monitors found";
                 return;
             }
 
-            _notifyIcon.Icon = _observedMonitor.Clamped ? _coloredIcon : _grayIcon;
-            _notifyIcon.Text = "Novideo sRGB - " + (_observedMonitor.Clamped ? "Clamped" : "Off");
+            // Reflects whether the clamp is active on any monitor, matching ToggleAllClamps'
+            // notion of "on" for the hotkey (rather than only tracking a single monitor).
+            var anyClamped = _viewModel.Monitors.Any(m => m.Clamped);
+            _notifyIcon.Icon = anyClamped ? _coloredIcon : _grayIcon;
+            _notifyIcon.Text = "Novideo sRGB - " + (anyClamped ? "Clamped" : "Off");
         }
 
         private static System.Drawing.Icon CreateGrayscaleIcon(System.Drawing.Icon source)
@@ -416,10 +469,19 @@ namespace novideo_srgb
             reapplyItem.Text = "Reapply";
             reapplyItem.Click += delegate { ReapplyMonitorSettings(); };
 
+            var trayTipItem = new MenuItem();
+            _contextMenu.MenuItems.Add(trayTipItem);
+            trayTipItem.Text = "Show tray tip";
+            trayTipItem.Click += delegate { ShowTrayTipBalloon(); };
+
             var exitItem = new MenuItem();
             _contextMenu.MenuItems.Add(exitItem);
             exitItem.Text = "Exit";
-            exitItem.Click += delegate { Close(); };
+            exitItem.Click += delegate
+            {
+                _exitRequested = true;
+                Close();
+            };
         }
 
         private void ReapplyMonitorSettings()

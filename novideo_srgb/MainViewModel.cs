@@ -26,6 +26,14 @@ namespace novideo_srgb
 
         public ModifierKeys HotkeyModifiers { get; private set; } = ModifierKeys.Control | ModifierKeys.Shift;
         public Key HotkeyKey { get; private set; } = Key.F9;
+        public bool TrayTipShown { get; private set; }
+
+        public void MarkTrayTipShown()
+        {
+            if (TrayTipShown) return;
+            TrayTipShown = true;
+            SaveConfig();
+        }
 
         public MainViewModel()
         {
@@ -50,6 +58,7 @@ namespace novideo_srgb
                 foreach (var monitor in Monitors)
                 {
                     monitor.CheckForDrift();
+                    monitor.CheckForMonitorWake();
                 }
             };
             _driftPollTimer.Start();
@@ -101,6 +110,12 @@ namespace novideo_srgb
                 if (keyAttr != null)
                 {
                     HotkeyKey = (Key)Enum.Parse(typeof(Key), keyAttr.Value);
+                }
+
+                var trayTipAttr = root.Attribute("tray_tip_shown");
+                if (trayTipAttr != null)
+                {
+                    TrayTipShown = (bool)trayTipAttr;
                 }
             }
             catch
@@ -168,6 +183,7 @@ namespace novideo_srgb
                 config = XElement.Load(_configPath).Descendants("monitor").ToList();
             }
 
+            var activePaths = DisplayConfigManager.GetActiveDisplayPaths();
             var hdrPaths = DisplayConfigManager.GetHdrDisplayPaths();
 
             var number = 1;
@@ -176,6 +192,11 @@ namespace novideo_srgb
                 var displays = WindowsDisplayAPI.Display.GetDisplays();
                 var path = displays.First(x => x.DisplayName == display.Name).DevicePath;
 
+                // Outputs DisplayConfig no longer reports as active (e.g. disconnected between
+                // enumeration calls) are still listed, but CanClamp gates any clamp attempt on
+                // them off, so we never call into NVAPI for a disconnected output.
+                var isActive = activePaths.Contains(path);
+
                 var hdrActive = hdrPaths.Contains(path);
 
                 var settings = config?.FirstOrDefault(x => (string)x.Attribute("path") == path);
@@ -183,9 +204,9 @@ namespace novideo_srgb
                 if (settings != null)
                 {
                     monitor = new MonitorData(this, number++, display, path, hdrActive,
-                        (bool)settings.Attribute("clamp_sdr"),
+                        (bool)settings.Attribute("clamp_sdr"), isActive,
                         (bool)settings.Attribute("use_icc"),
-                        (string)settings.Attribute("icc_path"),
+                        (string)settings.Attribute("icc_path") ?? "",
                         (bool)settings.Attribute("calibrate_gamma"),
                         (int)settings.Attribute("selected_gamma"),
                         (double)settings.Attribute("custom_gamma"),
@@ -195,7 +216,7 @@ namespace novideo_srgb
                 }
                 else
                 {
-                    monitor = new MonitorData(this, number++, display, path, hdrActive, false);
+                    monitor = new MonitorData(this, number++, display, path, hdrActive, false, isActive);
                 }
 
                 Monitors.Add(monitor);
@@ -223,9 +244,20 @@ namespace novideo_srgb
         {
             try
             {
+                // Monitors not currently connected (e.g. a laptop undocked, or a display
+                // temporarily powered off) are absent from `Monitors`, so preserve their old
+                // entries here instead of silently dropping their settings on next save.
+                List<XElement> offlineEntries = null;
+                if (File.Exists(_configPath))
+                {
+                    var oldConfig = XElement.Load(_configPath).Descendants("monitor").ToList();
+                    offlineEntries = oldConfig.FindAll(x => Monitors.All(m => m.Path != (string)x.Attribute("path")));
+                }
+
                 var xElem = new XElement("monitors",
                     new XAttribute("hotkey_modifiers", HotkeyModifiers),
                     new XAttribute("hotkey_key", HotkeyKey),
+                    new XAttribute("tray_tip_shown", TrayTipShown),
                     Monitors.Select(x =>
                         new XElement("monitor", new XAttribute("path", x.Path),
                             new XAttribute("clamp_sdr", x.ClampSdr),
@@ -237,6 +269,12 @@ namespace novideo_srgb
                             new XAttribute("custom_percentage", x.CustomPercentage),
                             new XAttribute("target", x.Target),
                             new XAttribute("disable_optimization", x.DisableOptimization))));
+
+                if (offlineEntries != null)
+                {
+                    xElem.Add(offlineEntries);
+                }
+
                 xElem.Save(_configPath);
             }
             catch (Exception ex)

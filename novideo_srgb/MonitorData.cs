@@ -18,22 +18,25 @@ namespace novideo_srgb
         public event PropertyChangedEventHandler PropertyChanged;
 
         private readonly GPUOutput _output;
+        private readonly DisplayDevice _displayDevice;
         private bool _clamped;
         private int _bitDepth;
         private Novideo.DitherControl _dither;
+        private bool? _monitorWasActive;
 
         private MainViewModel _viewModel;
 
-        public MonitorData(MainViewModel viewModel, int number, Display display, string path, bool hdrActive, bool clampSdr)
+        public MonitorData(MainViewModel viewModel, int number, Display display, string path, bool hdrActive, bool clampSdr, bool isActive)
         {
             _viewModel = viewModel;
             Number = number;
             _output = display.Output;
+            _displayDevice = display.DisplayDevice;
 
             _bitDepth = 0;
             try
             {
-                var bitDepth = display.DisplayDevice.CurrentColorData.ColorDepth;
+                var bitDepth = _displayDevice.CurrentColorData.ColorDepth;
                 if (bitDepth == ColorDataDepth.BPC6)
                     _bitDepth = 6;
                 else if (bitDepth == ColorDataDepth.BPC8)
@@ -57,6 +60,7 @@ namespace novideo_srgb
             Path = path;
             ClampSdr = clampSdr;
             HdrActive = hdrActive;
+            IsActive = isActive;
 
             var coords = Edid.DisplayParameters.ChromaticityCoordinates;
             EdidColorSpace = new Colorimetry.ColorSpace
@@ -75,13 +79,13 @@ namespace novideo_srgb
             CustomPercentage = 100;
         }
 
-        public MonitorData(MainViewModel viewModel, int number, Display display, string path, bool hdrActive, bool clampSdr, bool useIcc, string profilePath,
+        public MonitorData(MainViewModel viewModel, int number, Display display, string path, bool hdrActive, bool clampSdr, bool isActive, bool useIcc, string profilePath,
             bool calibrateGamma,
             int selectedGamma, double customGamma, double customPercentage, int target, bool disableOptimization) :
-            this(viewModel, number, display, path, hdrActive, clampSdr)
+            this(viewModel, number, display, path, hdrActive, clampSdr, isActive)
         {
             UseIcc = useIcc;
-            ProfilePath = profilePath;
+            ProfilePath = profilePath ?? "";
             CalibrateGamma = calibrateGamma;
             SelectedGamma = selectedGamma;
             CustomGamma = customGamma;
@@ -96,9 +100,12 @@ namespace novideo_srgb
         public string Path { get; }
         public bool ClampSdr { get; set; }
         public bool HdrActive { get; }
+        public bool IsActive { get; }
 
         private void UpdateClamp(bool doClamp)
         {
+            if (!IsActive) return;
+
             if (_clamped)
             {
                 Novideo.DisableColorSpaceConversion(_output);
@@ -244,12 +251,43 @@ namespace novideo_srgb
             OnPropertyChanged(nameof(Clamped));
         }
 
-        public bool CanClamp => !HdrActive && (UseEdid && !EdidColorSpace.Equals(TargetColorSpace) || UseIcc && ProfilePath != "");
+        // Windows doesn't reliably notify apps when a monitor (not the whole PC) enters
+        // standby via its own power-saving timeout, so SystemEvents.PowerModeChanged alone
+        // misses this case. Polling DisplayDevice.IsActive to catch the sleep->wake edge is a
+        // community-confirmed workaround (see upstream issue #46); the clamp is reapplied only
+        // right after a wake transition, not on every poll, to avoid needless reapply/flicker.
+        public void CheckForMonitorWake()
+        {
+            bool isActive;
+            try
+            {
+                isActive = _displayDevice.IsActive;
+            }
+            catch
+            {
+                // Querying IsActive can throw while the monitor is mid-transition into standby;
+                // treat that as "not active" rather than letting the exception propagate.
+                _monitorWasActive = false;
+                return;
+            }
+
+            var justWokeUp = _monitorWasActive == false && isActive;
+            _monitorWasActive = isActive;
+
+            if (justWokeUp && CanClamp && ClampSdr)
+            {
+                Logger.Log(LogLevel.Info, "Monitor " + Name + " woke from standby, reapplying clamp");
+                ReapplyClamp();
+            }
+        }
+
+        public bool CanClamp => IsActive && !HdrActive && (UseEdid && !EdidColorSpace.Equals(TargetColorSpace) || UseIcc && ProfilePath != "");
 
         public string ClampOffReason
         {
             get
             {
+                if (!IsActive) return "not connected";
                 if (HdrActive) return "HDR active";
                 if (!ClampSdr) return "not configured";
                 if (UseEdid && EdidColorSpace.Equals(TargetColorSpace)) return "already native target color space";

@@ -26,24 +26,55 @@ namespace novideo_srgb
         [DllImport("user32")]
         private static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_DEVICE_NAME requestPacket);
 
+        public static HashSet<string> GetActiveDisplayPaths()
+        {
+            var result = new HashSet<string>();
+            ForEachActivePath((path, displayInfo) => result.Add(displayInfo.monitorDevicePath));
+            return result;
+        }
+
         public static HashSet<string> GetHdrDisplayPaths()
         {
-            Action<int> check = (e) =>
-            {
-                if (e != 0)
-                {
-                    throw new Win32Exception(e);
-                }
-            };
+            var result = new HashSet<string>();
 
-            check(GetDisplayConfigBufferSizes(QDC.QDC_ONLY_ACTIVE_PATHS, out var pathCount, out var modeCount));
+            ForEachActivePath((path, displayInfo) =>
+            {
+                var colorInfo = new DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO();
+                colorInfo.header.type = DISPLAYCONFIG_DEVICE_INFO_TYPE.DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+                colorInfo.header.size = Marshal.SizeOf<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>();
+                colorInfo.header.adapterId = path.targetInfo.adapterId;
+                colorInfo.header.id = path.targetInfo.id;
+
+                Check(DisplayConfigGetDeviceInfo(ref colorInfo));
+
+                if (colorInfo.advancedColorEnabled)
+                {
+                    result.Add(displayInfo.monitorDevicePath);
+                }
+            });
+
+            return result;
+        }
+
+        private static void Check(int e)
+        {
+            if (e != 0)
+            {
+                throw new Win32Exception(e);
+            }
+        }
+
+        // Enumerates only currently active display paths (QDC_ONLY_ACTIVE_PATHS), shared by
+        // GetActiveDisplayPaths and GetHdrDisplayPaths so disconnected/inactive outputs are
+        // never included in either result.
+        private static void ForEachActivePath(Action<DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_TARGET_DEVICE_NAME> action)
+        {
+            Check(GetDisplayConfigBufferSizes(QDC.QDC_ONLY_ACTIVE_PATHS, out var pathCount, out var modeCount));
 
             var paths = new DISPLAYCONFIG_PATH_INFO[pathCount];
             var modes = new DISPLAYCONFIG_MODE_INFO[modeCount];
 
-            check(QueryDisplayConfig(QDC.QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero));
-
-            var result = new HashSet<string>();
+            Check(QueryDisplayConfig(QDC.QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero));
 
             Array.ForEach(paths, path =>
             {
@@ -53,23 +84,10 @@ namespace novideo_srgb
                 displayInfo.header.adapterId = path.targetInfo.adapterId;
                 displayInfo.header.id = path.targetInfo.id;
 
-                check(DisplayConfigGetDeviceInfo(ref displayInfo));
+                Check(DisplayConfigGetDeviceInfo(ref displayInfo));
 
-                var colorInfo = new DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO();
-                colorInfo.header.type = DISPLAYCONFIG_DEVICE_INFO_TYPE.DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
-                colorInfo.header.size = Marshal.SizeOf<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>();
-                colorInfo.header.adapterId = path.targetInfo.adapterId;
-                colorInfo.header.id = path.targetInfo.id;
-
-                check(DisplayConfigGetDeviceInfo(ref colorInfo));
-
-                if (colorInfo.advancedColorEnabled)
-                {
-                    result.Add(displayInfo.monitorDevicePath);
-                }
+                action(path, displayInfo);
             });
-
-            return result;
         }
     }
 
