@@ -32,7 +32,7 @@ Generally, the clamp should persist through reboots and driver updates, but it c
 
 Any change in the display setup (such as a monitor being added/removed) will cause the clamp to be reapplied on all monitors, as long as the application is running in the background. The main purpose of this is to handle HDR being toggled in Windows, as the clamp will automatically be disabled for monitors for which HDR is enabled (since colors would get messed up otherwise). Additionally, you can use the "Reapply" button to manually reapply the clamp in case something breaks (e.g. due to a driver bug).
 
-Closing the window (the X button) hides it to the tray instead of exiting, so it keeps running in the background — use "Exit" in the tray icon's context menu to actually quit. The regular minimize button just minimizes to the taskbar as usual. If you want to run it on boot, you can enable the "Run at startup" checkbox, which will use the `-minimize` command line argument to make it start hidden in the tray directly.
+If you want to run it on boot, you can enable the "Run at startup" checkbox, which will use the `-minimize` command line argument to make it start hidden in the tray directly (see "Close to tray" below for how closing/minimizing the window behaves).
 
 # Fork-specific features
 
@@ -42,7 +42,8 @@ Closing the window (the X button) hides it to the tray instead of exiting, so it
 * **Log window** — `Logs` button in the main window, or the tray icon's context menu → "Logs", shows a history of clamp state changes, startup checks, and errors (including NVAPI failures), with per-entry timestamps, export to a plain text file, and a clear function with a size/entry-count confirmation.
 * **Close to tray** — closing the main window (the X button) hides it to the tray instead of quitting, keeping the app running in the background; the minimize button keeps standard taskbar behavior. Use "Exit" in the tray icon's context menu to actually quit.
 * **Auto-reapply after monitor standby** — if the monitor (not the whole PC) goes to sleep via its own power-saving timeout and the clamp gets lost, it's automatically reapplied as soon as the monitor wakes back up, without needing to manually toggle it (see [upstream issue #46](https://github.com/ledoge/novideo_srgb/issues/46)).
-* **Tray tip on first hide** — the first time the window is hidden to the tray (via the X button, or `-minimize`), a one-time notification points out where to find the icon (e.g. under the "^" hidden icons arrow) and how to reopen the window. Re-show it anytime via "Show tray tip" in the tray icon's context menu.
+* **Tray tip on first hide** — the first time the window is hidden to the tray (via the X button, or `-minimize`), a one-time notification points out where to find the icon (e.g. under the "^" hidden icons arrow) and how to reopen the window. Re-show it anytime via the `Tip` button in the main window, or "Show tray tip" in the tray icon's context menu.
+* **Settings preserved for disconnected monitors** — if a monitor is temporarily disconnected (e.g. a laptop undocked, or a display powered off), its calibration/clamp settings are kept in the config file instead of being lost the next time settings are saved.
 
 # Known issues
 

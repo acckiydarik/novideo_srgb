@@ -93,8 +93,22 @@ namespace novideo_srgb
             // taskbar) - only this path should also hide to tray. "Exit" in the tray menu is
             // the only way to actually quit.
             e.Cancel = true;
-            _hideToTrayPending = true;
-            WindowState = WindowState.Minimized;
+
+            if (WindowState == WindowState.Minimized)
+            {
+                // Already minimized (e.g. closed via a taskbar thumbnail or Alt+F4 while
+                // minimized) - setting WindowState to its current value below would be a no-op
+                // and OnStateChanged would never fire, leaving the window stuck and (on a later
+                // unrelated minimize) incorrectly hiding to tray via a stale pending flag. Hide
+                // directly instead of relying on the state-change round trip.
+                Hide();
+                ShowTrayTipIfNeeded();
+            }
+            else
+            {
+                _hideToTrayPending = true;
+                WindowState = WindowState.Minimized;
+            }
         }
 
         protected override void OnStateChanged(EventArgs e)

@@ -16,6 +16,9 @@ namespace novideo_srgb
     {
         public ObservableCollection<MonitorData> Monitors { get; }
 
+        private bool _updatingMonitors;
+        private bool _monitorsUpdatePending;
+
         private string _configPath;
 
         private string _startupName;
@@ -175,6 +178,37 @@ namespace novideo_srgb
         }
 
         private void UpdateMonitors()
+        {
+            // SystemEvents.DisplaySettingsChanged can fire reentrantly on the same thread: a
+            // modal MessageBox shown from ReapplyClamp() (e.g. on a -104 NVAPI error) pumps a
+            // nested message loop, and if another display-change message arrives while that's
+            // open, this method gets re-entered while the outer call is still mid-`foreach` over
+            // `Monitors` - clearing/rebuilding the collection out from under that enumeration and
+            // crashing with "Collection was modified". Guard against running concurrently, and
+            // just re-run once more afterwards if a change came in while we were busy, so the
+            // latest display state is never silently dropped.
+            if (_updatingMonitors)
+            {
+                _monitorsUpdatePending = true;
+                return;
+            }
+
+            _updatingMonitors = true;
+            try
+            {
+                do
+                {
+                    _monitorsUpdatePending = false;
+                    RunUpdateMonitors();
+                } while (_monitorsUpdatePending);
+            }
+            finally
+            {
+                _updatingMonitors = false;
+            }
+        }
+
+        private void RunUpdateMonitors()
         {
             Monitors.Clear();
             List<XElement> config = null;

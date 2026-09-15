@@ -18,7 +18,7 @@ namespace novideo_srgb
         public event PropertyChangedEventHandler PropertyChanged;
 
         private readonly GPUOutput _output;
-        private readonly DisplayDevice _displayDevice;
+        private readonly Display _display;
         private bool _clamped;
         private int _bitDepth;
         private Novideo.DitherControl _dither;
@@ -31,12 +31,12 @@ namespace novideo_srgb
             _viewModel = viewModel;
             Number = number;
             _output = display.Output;
-            _displayDevice = display.DisplayDevice;
+            _display = display;
 
             _bitDepth = 0;
             try
             {
-                var bitDepth = _displayDevice.CurrentColorData.ColorDepth;
+                var bitDepth = display.DisplayDevice.CurrentColorData.ColorDepth;
                 if (bitDepth == ColorDataDepth.BPC6)
                     _bitDepth = 6;
                 else if (bitDepth == ColorDataDepth.BPC8)
@@ -256,12 +256,18 @@ namespace novideo_srgb
         // misses this case. Polling DisplayDevice.IsActive to catch the sleep->wake edge is a
         // community-confirmed workaround (see upstream issue #46); the clamp is reapplied only
         // right after a wake transition, not on every poll, to avoid needless reapply/flicker.
+        //
+        // Display.DisplayDevice returns a brand-new DisplayDevice snapshot (a fresh NVAPI query)
+        // on every access, so it must be re-read via `_display.DisplayDevice` on every poll here
+        // rather than cached - caching it once (as an earlier version of this code did) would
+        // freeze IsActive at whatever value it had when the monitor was first constructed,
+        // silently disabling this entire feature.
         public void CheckForMonitorWake()
         {
             bool isActive;
             try
             {
-                isActive = _displayDevice.IsActive;
+                isActive = _display.DisplayDevice.IsActive;
             }
             catch
             {
