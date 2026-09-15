@@ -4,6 +4,8 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
+using System.Windows.Input;
+using System.Windows.Threading;
 using System.Xml.Linq;
 using Microsoft.Win32;
 using NvAPIWrapper.Display;
@@ -20,6 +22,11 @@ namespace novideo_srgb
         private RegistryKey _startupKey;
         private string _startupValue;
 
+        private readonly DispatcherTimer _driftPollTimer;
+
+        public ModifierKeys HotkeyModifiers { get; private set; } = ModifierKeys.Control | ModifierKeys.Shift;
+        public Key HotkeyKey { get; private set; } = Key.F9;
+
         public MainViewModel()
         {
             Monitors = new ObservableCollection<MonitorData>();
@@ -30,7 +37,85 @@ namespace novideo_srgb
                 ("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
             _startupValue = Application.ExecutablePath + " -minimize";
 
+            LoadHotkeySettings();
             UpdateMonitors();
+            LogStartupStatus();
+
+            _driftPollTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            _driftPollTimer.Tick += delegate
+            {
+                foreach (var monitor in Monitors)
+                {
+                    monitor.CheckForDrift();
+                }
+            };
+            _driftPollTimer.Start();
+        }
+
+        public void StopDriftPoll()
+        {
+            _driftPollTimer.Stop();
+        }
+
+        public void SetHotkey(ModifierKeys modifiers, Key key)
+        {
+            HotkeyModifiers = modifiers;
+            HotkeyKey = key;
+            SaveConfig();
+        }
+
+        public void ToggleAllClamps()
+        {
+            var clampable = Monitors.Where(m => m.CanClamp).ToList();
+            if (clampable.Count == 0)
+            {
+                Logger.Log(LogLevel.Warning, "Hotkey pressed, but no monitor can currently be clamped");
+                return;
+            }
+
+            var turnOn = clampable.Any(m => !m.Clamped);
+            foreach (var monitor in clampable)
+            {
+                monitor.SetClampedFromHotkey(turnOn);
+            }
+        }
+
+        private void LoadHotkeySettings()
+        {
+            if (!File.Exists(_configPath)) return;
+
+            try
+            {
+                var root = XElement.Load(_configPath);
+                var modifiersAttr = root.Attribute("hotkey_modifiers");
+                var keyAttr = root.Attribute("hotkey_key");
+
+                if (modifiersAttr != null)
+                {
+                    HotkeyModifiers = (ModifierKeys)Enum.Parse(typeof(ModifierKeys), modifiersAttr.Value);
+                }
+
+                if (keyAttr != null)
+                {
+                    HotkeyKey = (Key)Enum.Parse(typeof(Key), keyAttr.Value);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void LogStartupStatus()
+        {
+            foreach (var monitor in Monitors)
+            {
+                Logger.Log(monitor.Clamped ? LogLevel.Success : LogLevel.Off,
+                    "Startup check: clamp for " + monitor.Name + " is " +
+                    (monitor.Clamped ? "on" : "off (" + monitor.ClampOffReason + ")"));
+            }
         }
 
         public bool? RunAtStartup
@@ -53,13 +138,23 @@ namespace novideo_srgb
             }
             set
             {
-                if (value == true)
+                try
                 {
-                    _startupKey.SetValue(_startupName, _startupValue);
+                    if (value == true)
+                    {
+                        _startupKey.SetValue(_startupName, _startupValue);
+                    }
+                    else
+                    {
+                        _startupKey.DeleteValue(_startupName, false);
+                    }
+
+                    Logger.Log(LogLevel.Info, "Run at startup " + (value == true ? "enabled" : "disabled"));
                 }
-                else
+                catch (Exception e)
                 {
-                    _startupKey.DeleteValue(_startupName);
+                    Logger.Log(LogLevel.Error, "Failed to update run-at-startup setting: " + e);
+                    MessageBox.Show(e.Message);
                 }
             }
         }
@@ -114,6 +209,7 @@ namespace novideo_srgb
 
         public void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
+            Logger.Log(LogLevel.Info, "Display configuration changed, re-detected monitors");
             UpdateMonitors();
         }
 
@@ -128,6 +224,8 @@ namespace novideo_srgb
             try
             {
                 var xElem = new XElement("monitors",
+                    new XAttribute("hotkey_modifiers", HotkeyModifiers),
+                    new XAttribute("hotkey_key", HotkeyKey),
                     Monitors.Select(x =>
                         new XElement("monitor", new XAttribute("path", x.Path),
                             new XAttribute("clamp_sdr", x.ClampSdr),
@@ -143,6 +241,7 @@ namespace novideo_srgb
             }
             catch (Exception ex)
             {
+                Logger.Log(LogLevel.Error, "Failed to save config: " + ex.Message);
                 MessageBox.Show(ex.Message + "\n\nTry extracting the program elsewhere.");
                 Environment.Exit(1);
             }

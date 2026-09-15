@@ -109,6 +109,8 @@
     <Compile Include="SrgbEOTF.cs" />
     <Compile Include="ToneCurve.cs" />
     <Page Include="AboutWindow.xaml" />
+    <Page Include="LogWindow.xaml" />
+    <Page Include="HotkeyWindow.xaml" />
     <Page Include="MainWindow.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
@@ -131,6 +133,17 @@
     <Compile Include="Matrix.cs" />
     <Compile Include="ICCMatrixProfile.cs" />
     <Compile Include="MonitorData.cs" />
+    <Compile Include="LogEntry.cs" />
+    <Compile Include="Logger.cs" />
+    <Compile Include="LogLevelToBrushConverter.cs" />
+    <Compile Include="NewGroupVisibilityConverter.cs" />
+    <Compile Include="TopMostMessageBox.cs" />
+    <Compile Include="LogWindow.xaml.cs">
+      <DependentUpon>LogWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="HotkeyWindow.xaml.cs">
+      <DependentUpon>HotkeyWindow.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Novideo.cs" />
     <Compile Include="AdvancedWindow.xaml.cs">
       <DependentUpon>AdvancedWindow.xaml</DependentUpon>

@@ -14,6 +14,10 @@
         <Grid DockPanel.Dock="Bottom">
             <Button DockPanel.Dock="Bottom" Content="About" Width="75" HorizontalAlignment="Left"
                     Click="AboutButton_Click" />
+            <Button DockPanel.Dock="Bottom" Content="Logs" Width="75" HorizontalAlignment="Left"
+                    Margin="81,0,0,0" Click="LogsButton_Click" />
+            <Button DockPanel.Dock="Bottom" Content="Hotkey" Width="75" HorizontalAlignment="Left"
+                    Margin="162,0,0,0" Click="HotkeyButton_Click" />
             <WrapPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right">
                 <CheckBox Content="Run at startup" IsThreeState="true" IsChecked="{Binding RunAtStartup}"
                           VerticalAlignment="Center" Margin="0,0,6,0">
@@ -25,6 +29,11 @@
                   DockPanel.Dock="Bottom" Margin="0,0,0,6" CanUserResizeColumns="False" CanUserSortColumns="False"
                   CanUserReorderColumns="False">
             <DataGrid.Resources>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="Transparent" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="Black" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}"
+                                 Color="Transparent" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="Transparent" />
                 <Style TargetType="{x:Type DataGridCell}">
                     <Setter Property="Template">
                         <Setter.Value>
@@ -37,6 +46,16 @@
                     </Setter>
                 </Style>
             </DataGrid.Resources>
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Clamped}" Value="True">
+                            <Setter Property="Background" Value="#FFDCF5DC" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="#" Binding="{Binding Number}" IsReadOnly="True" />
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" IsReadOnly="True" />

@@ -153,45 +153,68 @@ namespace novideo_srgb
             }
         }
 
-        private void HandleClampException(Exception e)
+        private void HandleClampException(Exception e, string sourceSuffix = "")
         {
-            MessageBox.Show(e.Message);
+            Logger.Log(LogLevel.Error, "Failed to apply clamp for " + Name + sourceSuffix + ": " + e);
             _clamped = Novideo.IsColorSpaceConversionActive(_output);
             ClampSdr = _clamped;
             _viewModel.SaveConfig();
             OnPropertyChanged(nameof(Clamped));
+            TopMostMessageBox.Show(e.Message);
         }
         
         public bool Clamped
         {
-            set
-            {
-                try
-                {
-                    UpdateClamp(value);
-                    ClampSdr = value;
-                    _viewModel.SaveConfig();
-                }
-                catch (Exception e)
-                {
-                    HandleClampException(e);
-                    return;
-                }
-
-                _clamped = value;
-                OnPropertyChanged();
-            }
+            set => SetClamped(value, "");
             get => _clamped;
         }
 
-        public void ReapplyClamp()
+        public void SetClampedFromHotkey(bool value)
+        {
+            SetClamped(value, " via hotkey");
+        }
+
+        private void SetClamped(bool value, string sourceSuffix)
+        {
+            try
+            {
+                UpdateClamp(value);
+                ClampSdr = value;
+                _viewModel.SaveConfig();
+            }
+            catch (Exception e)
+            {
+                HandleClampException(e, sourceSuffix);
+                return;
+            }
+
+            _clamped = value;
+            Logger.Log(value ? LogLevel.Success : LogLevel.Off,
+                (value ? "Clamp enabled for " : "Clamp disabled for ") + Name + sourceSuffix);
+            OnPropertyChanged(nameof(Clamped));
+        }
+
+        public void ReapplyClamp(bool manual = false)
         {
             try
             {
                 var clamped = CanClamp && ClampSdr;
+                var previous = _clamped;
                 UpdateClamp(clamped);
                 _clamped = clamped;
                 OnPropertyChanged(nameof(CanClamp));
+                OnPropertyChanged(nameof(Clamped));
+
+                if (clamped != previous)
+                {
+                    Logger.Log(LogLevel.Info,
+                        "Reapplied clamp for " + Name + ", now " + (clamped ? "enabled" : "disabled"));
+                }
+                else if (manual)
+                {
+                    Logger.Log(clamped ? LogLevel.Success : LogLevel.Off,
+                        "Reapplied clamp for " + Name + ", still " + (clamped ? "enabled" : "disabled"));
+                }
             }
             catch (Exception e)
             {
@@ -199,7 +222,41 @@ namespace novideo_srgb
             }
         }
 
+        public void CheckForDrift()
+        {
+            if (!CanClamp) return;
+
+            bool actual;
+            try
+            {
+                actual = Novideo.IsColorSpaceConversionActive(_output);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (actual == _clamped) return;
+
+            _clamped = actual;
+            Logger.Log(LogLevel.Warning,
+                "Detected external change: clamp for " + Name + " is now " + (actual ? "on" : "off"));
+            OnPropertyChanged(nameof(Clamped));
+        }
+
         public bool CanClamp => !HdrActive && (UseEdid && !EdidColorSpace.Equals(TargetColorSpace) || UseIcc && ProfilePath != "");
+
+        public string ClampOffReason
+        {
+            get
+            {
+                if (HdrActive) return "HDR active";
+                if (!ClampSdr) return "not configured";
+                if (UseEdid && EdidColorSpace.Equals(TargetColorSpace)) return "already native target color space";
+                if (UseIcc && ProfilePath == "") return "no ICC profile selected";
+                return "unknown";
+            }
+        }
 
         public string GPU => _output.PhysicalGPU.FullName;
 
@@ -265,10 +322,12 @@ namespace novideo_srgb
                 Novideo.SetDitherControl(_output, state, bits, mode);
                 _dither = Novideo.GetDitherControl(_output);
                 OnPropertyChanged(nameof(DitherString));
+                Logger.Log(LogLevel.Success, "Dither settings updated for " + Name + ": " + DitherString);
             }
             catch (Exception e)
             {
-                MessageBox.Show(e.Message);
+                Logger.Log(LogLevel.Error, "Failed to apply dither settings for " + Name + ": " + e);
+                TopMostMessageBox.Show(e.Message);
             }
         }
 
