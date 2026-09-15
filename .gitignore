@@ -389,3 +389,6 @@ FodyWeavers.xsd
 
 # Local dev notes, not for upstream
 DEVELOPMENT.md
+
+# Packaged release artifact — published via GitHub Releases, not committed to git
+release.zip

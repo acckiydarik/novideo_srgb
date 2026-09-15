@@ -1,4 +1,9 @@
-## [Download latest release](https://github.com/ledoge/novideo_srgb/releases/latest/download/release.zip)
+## [Download latest release](https://github.com/acckiydarik/novideo_srgb/releases/latest/download/release.zip)
+
+# About this fork
+This is a fork of the original [novideo_srgb](https://github.com/ledoge/novideo_srgb) by ledoge, which has seen no commits or maintainer activity since March 2024. This fork keeps the same undocumented-NVAPI-based clamping approach and adds a tray icon status indicator, a global hotkey, and a log window — see "Fork-specific features" below for details.
+
+Licensed under GPLv3, same as the original project — see [LICENSE](LICENSE).
 
 # About
 This tool uses an undocumented NVIDIA API, supported on Fermi and later, to convert colors before sending them to a wide gamut monitor to effectively clamp it to sRGB (alternatively: Display P3, Adobe RGB or BT.2020), based on the chromaticities provided in its EDID. AMD supports this as a hidden setting in their drivers, but NVIDIA doesn't because ???.
@@ -29,9 +34,18 @@ Any change in the display setup (such as a monitor being added/removed) will cau
 
 Minimizing the GUI will hide it from the taskbar, so that it'll only be visible in the tray. If you want to run it on boot, you can enable the "Run at startup" checkbox, which will use the `-minimize` command line argument to make it start minimized.
 
+# Fork-specific features
+
+* **Tray icon state** — the tray icon is colored while the clamp is active and turns grayscale when it isn't (e.g. disabled, or HDR is on), so you can tell the current state at a glance without opening the context menu.
+* **Clamped row highlight** — in the main window's monitor list, a row is highlighted green while its clamp is active, so the state is visible at a glance without checking each checkbox individually.
+* **Global hotkey** — assign a key combination (`Hotkey` button in the main window, or the tray icon's context menu → "Hotkey settings...") to toggle the clamp on all monitors at once from anywhere, without needing to open the window.
+* **Log window** — `Logs` button in the main window, or the tray icon's context menu → "Logs", shows a history of clamp state changes, startup checks, and errors (including NVAPI failures), with per-entry timestamps, export to a plain text file, and a clear function with a size/entry-count confirmation.
+
 # Known issues
 
 * Since version 531.79, the NVIDIA driver rejects any attempt to set a color space conversion while HDR is enabled with error -104 (`NVAPI_NOT_SUPPORTED`). This means that the HDR handling mentioned above does not work anymore. I don't know whether this is a driver bug or an intentional change, but I don't think I can do anything to fix it.
+
+* Some users have also reported error -104 without HDR ever being involved, on certain driver versions (see [upstream issue #131](https://github.com/ledoge/novideo_srgb/issues/131)). A community-suggested workaround (keeping a hidden DXGI swap chain alive) helped some people but not others, and reports suggest it depends heavily on the exact driver version — no fix from this fork is known to reliably solve it yet.
 
 * The color space transform does not get applied properly to the mouse cursor, which results in it having wrong gamma and colors. This should be hardly noticeable with the default Windows cursor. Workaround: Force software rendering of the cursor, e.g. using [SoftCursor](https://www.monitortests.com/forum/Thread-SoftCursor).
 

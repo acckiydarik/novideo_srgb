@@ -10,13 +10,12 @@
         WindowStartupLocation="CenterOwner"
         SnapsToDevicePixels="True">
     <StackPanel Margin="6">
-        <TextBlock FontSize="15" HorizontalAlignment="Center" TextAlignment="Center">
-            novideo_srgb v4.2 by ledoge
-        </TextBlock>
+        <TextBlock x:Name="VersionText" FontSize="15" HorizontalAlignment="Center" TextAlignment="Center" />
         <TextBlock HorizontalAlignment="Center" TextAlignment="Center">
             Licensed under GPLv3 <LineBreak /> <LineBreak />
+            Fork of <Hyperlink RequestNavigate="OnRequestNavigate" NavigateUri="https://github.com/ledoge/novideo_srgb">the original novideo_srgb</Hyperlink> by ledoge <LineBreak />
             Source code and releases hosted at <LineBreak />
-            <Hyperlink RequestNavigate="OnRequestNavigate" NavigateUri="https://github.com/ledoge/novideo_srgb">https://github.com/ledoge/novideo_srgb</Hyperlink>
+            <Hyperlink RequestNavigate="OnRequestNavigate" NavigateUri="https://github.com/acckiydarik/novideo_srgb">https://github.com/acckiydarik/novideo_srgb</Hyperlink>
         </TextBlock>
     </StackPanel>
 </Window>

@@ -1,4 +1,5 @@
-﻿using System.Windows;
+using System.Reflection;
+using System.Windows;
 using System.Windows.Navigation;
 
 namespace novideo_srgb
@@ -8,6 +9,9 @@ namespace novideo_srgb
         public AboutWindow()
         {
             InitializeComponent();
+
+            var version = Assembly.GetExecutingAssembly().GetName().Version;
+            VersionText.Text = $"novideo_srgb v{version.Major}.{version.Minor}";
         }
 
         private void OnRequestNavigate(object sender, RequestNavigateEventArgs e)
