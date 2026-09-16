@@ -58,8 +58,11 @@ namespace novideo_srgb
             };
             _driftPollTimer.Tick += delegate
             {
-                foreach (var monitor in Monitors)
+                // Snapshot: RetryPendingClamp can show a modal popup, whose nested message loop
+                // may run UpdateMonitors (display change) and clear/rebuild Monitors mid-loop.
+                foreach (var monitor in Monitors.ToList())
                 {
+                    monitor.RetryPendingClamp();
                     monitor.CheckForDrift();
                     monitor.CheckForMonitorWake();
                 }
@@ -88,7 +91,10 @@ namespace novideo_srgb
                 return;
             }
 
-            var turnOn = clampable.Any(m => !m.Clamped);
+            // Steer by the effective target (pending intent when a -104 retry is in flight,
+            // actual state otherwise) so repeated presses keep flipping in the expected
+            // direction even before the driver has accepted the previous change.
+            var turnOn = clampable.Any(m => !m.EffectiveClampTarget);
             foreach (var monitor in clampable)
             {
                 monitor.SetClampedFromHotkey(turnOn);

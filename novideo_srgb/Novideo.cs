@@ -14,6 +14,19 @@ throwing stuff at NVAPI and observing the results or errors
 
 namespace novideo_srgb
 {
+    // NVAPI status codes surface as bare ints from the undocumented calls below; carrying the
+    // code on the exception lets callers branch on specific errors (notably -104,
+    // NVAPI_NOT_SUPPORTED) without parsing message strings.
+    public class NvApiException : Exception
+    {
+        public int Status { get; }
+
+        public NvApiException(string message, int status) : base(message)
+        {
+            Status = status;
+        }
+    }
+
     public static class Novideo
     {
         /*
@@ -111,7 +124,7 @@ namespace novideo_srgb
             var status = NvAPI_GPU_GetColorSpaceConversion(displayId, ref csc);
             if (status != 0)
             {
-                throw new Exception("NvAPI_GPU_GetColorSpaceConversion failed with error code " + status);
+                throw new NvApiException("NvAPI_GPU_GetColorSpaceConversion failed with error code " + status, status);
             }
 
             var result = new ColorSpaceConversion
@@ -178,7 +191,7 @@ namespace novideo_srgb
             var status = NvAPI_GPU_SetColorSpaceConversion(displayId, ref csc);
             if (status != 0)
             {
-                throw new Exception("NvAPI_GPU_SetColorSpaceConversion failed with error code " + status);
+                throw new NvApiException("NvAPI_GPU_SetColorSpaceConversion failed with error code " + status, status);
             }
         }
 
@@ -276,7 +289,7 @@ namespace novideo_srgb
                 var status = NvAPI_GPU_SetColorSpaceConversion(displayId, ref csc);
                 if (status != 0)
                 {
-                    throw new Exception("NvAPI_GPU_SetColorSpaceConversion failed with error code " + status);
+                    throw new NvApiException("NvAPI_GPU_SetColorSpaceConversion failed with error code " + status, status);
                 }
             }
         }
@@ -341,7 +354,7 @@ namespace novideo_srgb
                 ref dither);
             if (status != 0)
             {
-                throw new Exception("NvAPI_GPU_GetDitherControl failed with error code " + status);
+                throw new NvApiException("NvAPI_GPU_GetDitherControl failed with error code " + status, status);
             }
 
             return dither.ditherControl;
@@ -352,7 +365,7 @@ namespace novideo_srgb
             var status = NvAPI_GPU_SetDitherControl(output.PhysicalGPU.GPUId, (uint)output.OutputId, state, bits, mode);
             if (status != 0)
             {
-                throw new Exception("NvAPI_GPU_SetDitherControl failed with error code " + status);
+                throw new NvApiException("NvAPI_GPU_SetDitherControl failed with error code " + status, status);
             }
         }
 

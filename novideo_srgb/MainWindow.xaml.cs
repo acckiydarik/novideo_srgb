@@ -211,7 +211,9 @@ namespace novideo_srgb
             {
                 _viewModel.SaveConfig();
                 LogCalibrationChange(monitor);
-                monitor?.ReapplyClamp();
+                // Manual: the user just confirmed calibration changes in the Advanced dialog,
+                // so a -104 rejection here should surface a popup after the retry grace period.
+                monitor?.ReapplyClamp(true);
             }
 
             if (window.ChangedDither)
@@ -389,7 +391,8 @@ namespace novideo_srgb
 
         private void Monitor_PropertyChanged(object sender, PropertyChangedEventArgs e)
         {
-            if (e.PropertyName == nameof(MonitorData.Clamped))
+            if (e.PropertyName == nameof(MonitorData.Clamped) ||
+                e.PropertyName == nameof(MonitorData.IsClampPending))
             {
                 UpdateTrayIconState();
             }
@@ -406,9 +409,13 @@ namespace novideo_srgb
 
             // Reflects whether the clamp is active on any monitor, matching ToggleAllClamps'
             // notion of "on" for the hotkey (rather than only tracking a single monitor).
+            // The icon always shows the ACTUAL state; a pending (-104 deferred) change is
+            // surfaced via the tooltip suffix only.
             var anyClamped = _viewModel.Monitors.Any(m => m.Clamped);
+            var anyPending = _viewModel.Monitors.Any(m => m.IsClampPending);
             _notifyIcon.Icon = anyClamped ? _coloredIcon : _grayIcon;
-            _notifyIcon.Text = "Novideo sRGB - " + (anyClamped ? "Clamped" : "Off");
+            _notifyIcon.Text = "Novideo sRGB - " + (anyClamped ? "Clamped" : "Off") +
+                               (anyPending ? " (applying...)" : "");
         }
 
         private static System.Drawing.Icon CreateGrayscaleIcon(System.Drawing.Icon source)
