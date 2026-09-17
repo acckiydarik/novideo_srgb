@@ -17,5 +17,17 @@
             Source code and releases hosted at <LineBreak />
             <Hyperlink RequestNavigate="OnRequestNavigate" NavigateUri="https://github.com/acckiydarik/novideo_srgb">https://github.com/acckiydarik/novideo_srgb</Hyperlink>
         </TextBlock>
+        <TextBlock x:Name="UpdateText" HorizontalAlignment="Center" TextAlignment="Center"
+                   Margin="0,10,0,0" Foreground="Gray">
+            <Run x:Name="UpdateRun" Text="Checking for updates..." />
+        </TextBlock>
+        <TextBlock x:Name="ReleaseLinkText" HorizontalAlignment="Center" TextAlignment="Center"
+                   Visibility="Collapsed">
+            <Hyperlink x:Name="ReleaseLink" RequestNavigate="OnRequestNavigate">Open release page</Hyperlink>
+        </TextBlock>
+        <TextBlock x:Name="RetryLinkText" HorizontalAlignment="Center" TextAlignment="Center"
+                   Visibility="Collapsed">
+            <Hyperlink Click="OnRetryClick">Try again</Hyperlink>
+        </TextBlock>
     </StackPanel>
 </Window>

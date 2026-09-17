@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:novideo_srgb"
-        ResizeMode="CanMinimize"
+        ResizeMode="CanResize"
         mc:Ignorable="d"
         Title="Novideo sRGB" Height="320" Width="580" MinHeight="150" MinWidth="300">
     <Window.DataContext>
@@ -25,8 +25,8 @@
                 <Button Content="Reapply" Width="75" Click="ReapplyButton_Click" />
             </WrapPanel>
         </Grid>
-        <DataGrid ItemsSource="{Binding Monitors}" RowHeaderWidth="0" AutoGenerateColumns="False"
-                  DockPanel.Dock="Bottom" Margin="0,0,0,6" CanUserResizeColumns="False" CanUserSortColumns="False"
+        <DataGrid x:Name="MonitorGrid" ItemsSource="{Binding Monitors}" RowHeaderWidth="0" AutoGenerateColumns="False"
+                  DockPanel.Dock="Bottom" Margin="0,0,0,6" CanUserResizeColumns="False" CanUserSortColumns="True"
                   CanUserReorderColumns="False">
             <DataGrid.Resources>
                 <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="Transparent" />
@@ -52,6 +52,12 @@
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding Clamped}" Value="True">
                             <Setter Property="Background" Value="#FFDCF5DC" />
+                        </DataTrigger>
+                        <!-- Declared after the Clamped trigger on purpose: the last matching
+                             trigger wins, so a pending change visibly overrides the plain
+                             on/off colour while the driver keeps rejecting it. -->
+                        <DataTrigger Binding="{Binding IsClampPending}" Value="True">
+                            <Setter Property="Background" Value="#FFFFE0B2" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
@@ -80,12 +86,37 @@
                         <DataTemplate>
                             <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
                                       IsEnabled="{Binding CanClamp}"
-                                      IsChecked="{Binding Clamped, UpdateSourceTrigger=PropertyChanged}" />
+                                      IsChecked="{Binding ClampRequested, UpdateSourceTrigger=PropertyChanged}"
+                                      ToolTip="{Binding ClampStatusTooltip}"
+                                      ToolTipService.ShowOnDisabled="True">
+                                <CheckBox.Style>
+                                    <Style TargetType="CheckBox">
+                                        <Style.Triggers>
+                                            <!-- Muted while the driver has not accepted the
+                                                 change yet: the box still shows WHICH state was
+                                                 requested (and stays clickable, so the user can
+                                                 change their mind), but looks unsettled rather
+                                                 than final. Deliberately not the indeterminate
+                                                 three-state look - in Windows that means
+                                                 "mixed", not "in progress", and it would also
+                                                 hide the requested direction. -->
+                                            <DataTrigger Binding="{Binding IsClampPending}" Value="True">
+                                                <Setter Property="Opacity" Value="0.45" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </CheckBox.Style>
+                            </CheckBox>
                         </DataTemplate>
                     </DataGridTemplateColumn.CellTemplate>
                     <DataGridTemplateColumn.CellStyle>
                         <Style TargetType="DataGridCell">
                             <Setter Property="Margin" Value="0,0,-1,0" />
+                            <!-- Also on the cell, not only on the checkbox: the checkbox is
+                                 disabled exactly when the explanation matters most, and a
+                                 disabled control does not reliably raise hover events. -->
+                            <Setter Property="ToolTip" Value="{Binding ClampStatusTooltip}" />
+                            <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
                         </Style>
                     </DataGridTemplateColumn.CellStyle>
                 </DataGridTemplateColumn>

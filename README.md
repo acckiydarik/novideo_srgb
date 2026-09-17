@@ -1,7 +1,7 @@
 ## [Download latest release](https://github.com/acckiydarik/novideo_srgb/releases/latest/download/release.zip)
 
 # About this fork
-This is a fork of the original [novideo_srgb](https://github.com/ledoge/novideo_srgb) by ledoge, which has seen no commits or maintainer activity since March 2024. This fork keeps the same undocumented-NVAPI-based clamping approach and adds a tray icon status indicator, a global hotkey, and a log window — see "Fork-specific features" below for details.
+This is a fork of the original [novideo_srgb](https://github.com/ledoge/novideo_srgb) by ledoge, which has seen no commits or maintainer activity since March 2024. It keeps the same undocumented-NVAPI-based clamping approach and adds automatic retrying of clamp changes that newer NVIDIA drivers reject, command line control, a global hotkey, and a number of smaller interface improvements — see "Fork-specific features" below for details.
 
 Licensed under GPLv3, same as the original project — see [LICENSE](LICENSE).
 
@@ -36,21 +36,44 @@ If you want to run it on boot, you can enable the "Run at startup" checkbox, whi
 
 # Fork-specific features
 
-* **Tray icon state** — the tray icon is colored while the clamp is active and turns grayscale when it isn't (e.g. disabled, or HDR is on), so you can tell the current state at a glance without opening the context menu.
-* **Clamped row highlight** — in the main window's monitor list, a row is highlighted green while its clamp is active, so the state is visible at a glance without checking each checkbox individually.
-* **Global hotkey** — assign a key combination (`Hotkey` button in the main window, or the tray icon's context menu → "Hotkey settings...") to toggle the clamp on all monitors at once from anywhere, without needing to open the window.
-* **Log window** — `Logs` button in the main window, or the tray icon's context menu → "Logs", shows a history of clamp state changes, startup checks, and errors (including NVAPI failures), with per-entry timestamps, export to a plain text file, and a clear function with a size/entry-count confirmation.
-* **Close to tray** — closing the main window (the X button) hides it to the tray instead of quitting, keeping the app running in the background; the minimize button keeps standard taskbar behavior. Use "Exit" in the tray icon's context menu to actually quit.
-* **Auto-reapply after monitor standby** — if the monitor (not the whole PC) goes to sleep via its own power-saving timeout and the clamp gets lost, it's automatically reapplied as soon as the monitor wakes back up, without needing to manually toggle it (see [upstream issue #46](https://github.com/ledoge/novideo_srgb/issues/46)).
-* **Tray tip on first hide** — the first time the window is hidden to the tray (via the X button, or `-minimize`), a one-time notification points out where to find the icon (e.g. under the "^" hidden icons arrow) and how to reopen the window. Re-show it anytime via the `Tip` button in the main window, or "Show tray tip" in the tray icon's context menu.
-* **Settings preserved for disconnected monitors** — if a monitor is temporarily disconnected (e.g. a laptop undocked, or a display powered off), its calibration/clamp settings are kept in the config file instead of being lost the next time settings are saved.
-* **Automatic retry on driver rejection (-104)** — newer NVIDIA drivers reject color space conversion writes in background contexts (app startup, fullscreen game transitions, hotkey while another window is focused). Instead of showing an error for every rejection, the change is kept as pending and retried quietly until the driver accepts it; the log records the rejection, retry progress, and the final result with the attempt count.
+* **Command line control** — enable, disable, toggle or query the clamp from scripts; see "Command line" below.
+* **Global hotkey** — toggle the clamp on all monitors from anywhere (`Hotkey` button, or the tray menu).
+* **Tray icon state** — colored while the clamp is active, grayscale when it isn't.
+* **Clamped row highlight** — active clamps are highlighted green in the monitor list.
+* **Pending state in the UI** — a change still waiting for the driver shows an orange row and a dimmed checkbox.
+* **Reason tooltips** — hovering the "Clamped" checkbox explains why it is unavailable or still being applied.
+* **Log window** — history of clamp changes, startup checks and NVAPI errors, with export (`Logs` button, or the tray menu).
+* **Resizable window with saved layout** — resize, maximize and sort columns; size, position, maximized state and column sorting are restored on the next start.
+* **Close to tray** — the X button hides to the tray instead of quitting; minimize keeps standard taskbar behavior.
+* **Single instance activation** — launching the app again brings the existing window to the front.
+* **Tray tip on first hide** — a one-time notification points out where the tray icon is (repeatable via the `Tip` button).
+* **Auto-reapply after monitor standby** — the clamp is restored when a sleeping monitor wakes up ([upstream issue #46](https://github.com/ledoge/novideo_srgb/issues/46)).
+* **Settings preserved for disconnected monitors** — settings of a temporarily unplugged display are kept in the config.
+* **Automatic retry on driver rejection** — rejected clamp changes are retried in the background instead of raising an error; see "Known issues".
+* **Update check** — the About window checks GitHub for a newer release when opened. Nothing is sent or downloaded automatically.
+
+# Command line
+
+Control an already running instance without opening the window:
+
+```
+novideo_srgb.exe --help             Show usage and exit codes
+novideo_srgb.exe --version          Print the application version
+novideo_srgb.exe --enable [index]   Enable the sRGB clamp
+novideo_srgb.exe --disable [index]  Disable the sRGB clamp
+novideo_srgb.exe --toggle [index]   Toggle the sRGB clamp
+novideo_srgb.exe --status [index]   Print clamp state without changing it
+```
+
+`index` is the 1-based monitor number shown in the `#` column. Without it, the command applies to all monitors, matching the global hotkey. Control commands require a running instance and never start one; run `--help` for the full list of exit codes.
+
+This is a GUI executable, so an interactive `cmd`/PowerShell prompt returns immediately without waiting for it. Batch files and Task Scheduler work as expected; for interactive use run it via `start /wait novideo_srgb.exe --status` or `Start-Process -Wait`.
 
 # Known issues
 
 * Since version 531.79, the NVIDIA driver rejects any attempt to set a color space conversion while HDR is enabled with error -104 (`NVAPI_NOT_SUPPORTED`). This means that the HDR handling mentioned above does not work anymore. I don't know whether this is a driver bug or an intentional change, but I don't think I can do anything to fix it.
 
-* Some users have also reported error -104 without HDR ever being involved, on certain driver versions (see [upstream issue #131](https://github.com/ledoge/novideo_srgb/issues/131) and [#138](https://github.com/ledoge/novideo_srgb/issues/138)). On newer drivers the write is rejected depending on the display's presentation state, while the previously applied clamp keeps working. This fork handles those rejections automatically: the desired state is kept as pending and quietly retried in the background until the driver accepts it (progress is visible in the log window and as an "(applying...)" suffix on the tray tooltip). A dialog is shown only for a manually triggered change that could not be applied within a few seconds — retries continue after it.
+* Some users have also reported error -104 without HDR ever being involved, on certain driver versions (see [upstream issue #131](https://github.com/ledoge/novideo_srgb/issues/131) and [#138](https://github.com/ledoge/novideo_srgb/issues/138)). On newer drivers the write is rejected depending on the display's presentation state, while the previously applied clamp keeps working. This fork handles those rejections automatically: the desired state is kept as pending and quietly retried in the background until the driver accepts it. Progress is visible as an orange row in the main window, an "(applying...)" suffix on the tray tooltip, and entries in the log window. A dialog is shown only for a manually triggered change that could not be applied within a few seconds — retries continue after it.
 
 * The color space transform does not get applied properly to the mouse cursor, which results in it having wrong gamma and colors. This should be hardly noticeable with the default Windows cursor. Workaround: Force software rendering of the cursor, e.g. using [SoftCursor](https://www.monitortests.com/forum/Thread-SoftCursor).
 

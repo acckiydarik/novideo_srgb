@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Linq;
@@ -21,6 +20,22 @@ namespace novideo_srgb
         private readonly MainViewModel _viewModel;
         private bool _exitRequested;
         private bool _hideToTrayPending;
+
+        // Last state the window was actually shown in. Needed because WindowState is
+        // Minimized while hidden in the tray (and while merely minimized to the taskbar), so
+        // neither restoring from the tray nor saving "was it maximized" can rely on the
+        // instantaneous WindowState.
+        private WindowState _lastNonMinimizedState = WindowState.Normal;
+
+        // False until the window has actually been displayed at least once. With -minimize the
+        // window is hidden before it is ever shown, and RestoreBounds of a never-shown window
+        // is Rect.Empty (infinities) - persisting that would overwrite the user's real saved
+        // geometry with garbage that the next startup silently rejects.
+        private bool _windowShownOnce;
+
+        // Exposed for App.Main(), which wires the CLI pipe server up to this window's view
+        // model and dispatcher after construction.
+        internal MainViewModel ViewModel => _viewModel;
 
         private ContextMenu _contextMenu;
         private NotifyIcon _notifyIcon;
@@ -46,18 +61,14 @@ namespace novideo_srgb
 
         public MainWindow()
         {
-            if (Process.GetProcessesByName(Process.GetCurrentProcess().ProcessName).Length > 1)
-            {
-                Logger.Log(LogLevel.Warning, "Startup blocked: another instance is already running");
-                MessageBox.Show("Already running!");
-                Close();
-                return;
-            }
-
+            // Single-instance detection lives in App.Main() now (named mutex): by the time a
+            // MainWindow is constructed, this process is guaranteed to be the primary instance.
             Logger.Log(LogLevel.Info, "Application started");
 
             InitializeComponent();
             _viewModel = (MainViewModel)DataContext;
+            RestoreWindowGeometry();
+            RestoreColumnSort();
             new WindowInteropHelper(this).EnsureHandle();
 
             SystemEvents.DisplaySettingsChanged += _viewModel.OnDisplaySettingsChanged;
@@ -84,8 +95,171 @@ namespace novideo_srgb
             Closing += MainWindow_Closing;
         }
 
+        // Applies the geometry saved in config.xml, following the same pattern LogWindow uses,
+        // plus explicit sanity checks: the file is user-editable and can also be corrupted, and
+        // silently applying NaN/negative/absurd bounds would produce an unusable window.
+        private void RestoreWindowGeometry()
+        {
+            if (_viewModel.WindowMaximized)
+            {
+                _lastNonMinimizedState = WindowState.Maximized;
+            }
+
+            if (!_viewModel.WindowLeft.HasValue || !_viewModel.WindowTop.HasValue ||
+                !_viewModel.WindowWidth.HasValue || !_viewModel.WindowHeight.HasValue)
+            {
+                // Nothing saved yet (first run, or upgrading from a version without this) -
+                // keep the XAML defaults.
+                ApplySavedMaximized();
+                return;
+            }
+
+            var left = _viewModel.WindowLeft.Value;
+            var top = _viewModel.WindowTop.Value;
+            var width = _viewModel.WindowWidth.Value;
+            var height = _viewModel.WindowHeight.Value;
+
+            if (!IsFinite(left) || !IsFinite(top) || !IsFinite(width) || !IsFinite(height))
+            {
+                ApplySavedMaximized();
+                return;
+            }
+
+            if (width < MinWidth || height < MinHeight)
+            {
+                ApplySavedMaximized();
+                return;
+            }
+
+            // Guard against a corrupted file claiming an absurd size.
+            if (width > SystemParameters.VirtualScreenWidth * 2 ||
+                height > SystemParameters.VirtualScreenHeight * 2)
+            {
+                ApplySavedMaximized();
+                return;
+            }
+
+            // The monitor the window used to live on may be gone, or the resolution may have
+            // dropped (e.g. saved at 2560x1440, now running 1920x1080). A bare "intersects at
+            // all" test would happily restore a window whose visible part is a few pixels in
+            // the corner, or whose title bar sits above the top edge - in both cases the user
+            // cannot grab it. Require a usable chunk of the window, including its title bar
+            // row, to land inside the virtual screen.
+            var bounds = new Rect(left, top, width, height);
+            var virtualScreen = new Rect(SystemParameters.VirtualScreenLeft,
+                SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenWidth,
+                SystemParameters.VirtualScreenHeight);
+
+            var visible = Rect.Intersect(bounds, virtualScreen);
+            const double minVisibleWidth = 120;
+            const double minVisibleHeight = 40;
+            var titleBarReachable = top >= virtualScreen.Top &&
+                                    top <= virtualScreen.Bottom - minVisibleHeight;
+
+            if (visible.IsEmpty || visible.Width < minVisibleWidth ||
+                visible.Height < minVisibleHeight || !titleBarReachable)
+            {
+                ApplySavedMaximized();
+                return;
+            }
+
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = left;
+            Top = top;
+            Width = width;
+            Height = height;
+            ApplySavedMaximized();
+        }
+
+        private void ApplySavedMaximized()
+        {
+            if (_viewModel.WindowMaximized)
+            {
+                WindowState = WindowState.Maximized;
+            }
+        }
+
+        // double.IsFinite does not exist in .NET Framework 4.8.
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        // Re-applies the column sort saved in config.xml. Sorting lives on the collection view,
+        // not on the items, so this survives UpdateMonitors() clearing and refilling Monitors.
+        private void RestoreColumnSort()
+        {
+            if (string.IsNullOrEmpty(_viewModel.SortColumn)) return;
+
+            // The saved column may no longer exist (e.g. after a layout change in a future
+            // version) - leave the default order rather than guessing.
+            var column = MonitorGrid.Columns
+                .FirstOrDefault(c => c.SortMemberPath == _viewModel.SortColumn);
+            if (column == null) return;
+
+            var direction = _viewModel.SortDescending
+                ? ListSortDirection.Descending
+                : ListSortDirection.Ascending;
+
+            MonitorGrid.Items.SortDescriptions.Clear();
+            MonitorGrid.Items.SortDescriptions.Add(
+                new SortDescription(_viewModel.SortColumn, direction));
+            // Drives the little arrow in the header; without it the list would be sorted but
+            // the header would look unsorted.
+            column.SortDirection = direction;
+        }
+
+        private void CaptureColumnSort()
+        {
+            if (MonitorGrid.Items.SortDescriptions.Count == 0)
+            {
+                _viewModel.SortColumn = null;
+                _viewModel.SortDescending = false;
+                return;
+            }
+
+            var sort = MonitorGrid.Items.SortDescriptions[0];
+            _viewModel.SortColumn = sort.PropertyName;
+            _viewModel.SortDescending = sort.Direction == ListSortDirection.Descending;
+        }
+
+        // Pushes the current bounds into the view model, which owns the config.xml schema.
+        private void CaptureWindowGeometry()
+        {
+            // Never captured anything while the window was hidden the whole session: keep the
+            // values loaded from the config instead of overwriting them with Rect.Empty.
+            if (!_windowShownOnce) return;
+
+            // RestoreBounds (not the live Width/Height) is what must be persisted: while
+            // maximized the live size is the screen size, and restoring that as the "normal"
+            // size would lose the size the user actually picked.
+            var bounds = WindowState == WindowState.Normal
+                ? new Rect(Left, Top, Width, Height)
+                : RestoreBounds;
+
+            if (bounds.IsEmpty || !IsFinite(bounds.Left) || !IsFinite(bounds.Top) ||
+                !IsFinite(bounds.Width) || !IsFinite(bounds.Height))
+            {
+                return;
+            }
+
+            _viewModel.WindowLeft = bounds.Left;
+            _viewModel.WindowTop = bounds.Top;
+            _viewModel.WindowWidth = bounds.Width;
+            _viewModel.WindowHeight = bounds.Height;
+            _viewModel.WindowMaximized = _lastNonMinimizedState == WindowState.Maximized;
+        }
+
         private void MainWindow_Closing(object sender, CancelEventArgs e)
         {
+            // Capture geometry BEFORE the _exitRequested early-return: "Exit" from the tray
+            // sets that flag and returns here immediately, so anything placed below would
+            // never run on a real quit - the user's last resize would be lost whenever they
+            // exited without hiding to tray first.
+            CaptureWindowGeometry();
+            CaptureColumnSort();
+            _viewModel.SaveConfig(fatalOnError: false);
+
             if (_exitRequested) return;
 
             // Clicking the window's X hides it to the tray (out of the taskbar entirely).
@@ -113,6 +287,15 @@ namespace novideo_srgb
 
         protected override void OnStateChanged(EventArgs e)
         {
+            if (WindowState == WindowState.Normal || WindowState == WindowState.Maximized)
+            {
+                // Track this on every transition, not just when hiding to tray: the user can
+                // maximize, press the ordinary minimize button (staying in the taskbar) and
+                // only then close/exit - by that point WindowState is already Minimized and
+                // the maximized state would be unrecoverable.
+                _lastNonMinimizedState = WindowState;
+            }
+
             if (WindowState == WindowState.Minimized && _hideToTrayPending)
             {
                 _hideToTrayPending = false;
@@ -121,6 +304,29 @@ namespace novideo_srgb
             }
 
             base.OnStateChanged(e);
+        }
+
+        protected override void OnContentRendered(EventArgs e)
+        {
+            _windowShownOnce = true;
+            base.OnContentRendered(e);
+        }
+
+        // Single shared restore path for both the tray double-click and the CLI ACTIVATE
+        // command (a second launch attempt delegates its foreground right to this process via
+        // AllowSetForegroundWindow before we get here). Keeping this in one method matters:
+        // the window-QoL phase will teach it to restore Maximized instead of hardcoding
+        // Normal, and that change must apply to both callers at once.
+        public void RestoreWindowToForeground()
+        {
+            // Show() + WindowState alone can leave the window logically restored but still
+            // behind other apps on screen; Activate() asks for the foreground (best effort -
+            // Windows may refuse, but the window is at least visible and restored).
+            // Restoring _lastNonMinimizedState rather than a hardcoded Normal keeps a
+            // maximized window maximized across a hide-to-tray round trip.
+            Show();
+            WindowState = _lastNonMinimizedState;
+            Activate();
         }
 
         private void AboutButton_Click(object sender, RoutedEventArgs o)
@@ -273,14 +479,7 @@ namespace novideo_srgb
             };
 
             _notifyIcon.MouseDoubleClick +=
-                delegate
-                {
-                    // Show() + WindowState alone can leave the window logically restored but
-                    // still behind other apps on screen; Activate() forces it to the foreground.
-                    Show();
-                    WindowState = WindowState.Normal;
-                    Activate();
-                };
+                delegate { RestoreWindowToForeground(); };
 
             _contextMenu = new ContextMenu();
 
@@ -468,9 +667,12 @@ namespace novideo_srgb
                 var item = new MenuItem();
                 _contextMenu.MenuItems.Add(item);
                 item.Text = monitor.Name;
-                item.Checked = monitor.Clamped;
+                // Same intent-based semantics as the checkbox and the hotkey: while a -104
+                // retry is pending this shows (and flips) what was requested, not the state
+                // the driver has accepted so far.
+                item.Checked = monitor.ClampRequested;
                 item.Enabled = monitor.CanClamp;
-                item.Click += (sender, args) => monitor.Clamped = !monitor.Clamped;
+                item.Click += (sender, args) => monitor.ClampRequested = !monitor.ClampRequested;
             }
 
             _contextMenu.MenuItems.Add("-");

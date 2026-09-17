@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -30,6 +31,22 @@ namespace novideo_srgb
         public ModifierKeys HotkeyModifiers { get; private set; } = ModifierKeys.Control | ModifierKeys.Shift;
         public Key HotkeyKey { get; private set; } = Key.F9;
         public bool TrayTipShown { get; private set; }
+
+        // Main window geometry. SaveConfig() rebuilds the whole <monitors> root element on
+        // every call (hotkey change, clamp toggle, tray tip, Advanced confirm...), so any
+        // setting written to config.xml from outside this class would be wiped by the very
+        // next save. The view model therefore owns these values; MainWindow only pushes its
+        // current bounds into them right before closing.
+        public double? WindowLeft { get; set; }
+        public double? WindowTop { get; set; }
+        public double? WindowWidth { get; set; }
+        public double? WindowHeight { get; set; }
+        public bool WindowMaximized { get; set; }
+
+        // Which column the monitor list is sorted by, as the property name WPF uses in its
+        // SortDescriptions (e.g. "Name"). Null means the default, unsorted order.
+        public string SortColumn { get; set; }
+        public bool SortDescending { get; set; }
 
         public void MarkTrayTipShown()
         {
@@ -101,6 +118,95 @@ namespace novideo_srgb
             }
         }
 
+        // ---- CLI command handlers (called from the pipe server via Dispatcher.Invoke) ----
+
+        public CliCommandResult EnableClamp(int? index) => ApplyCliClamp(index, _ => true);
+
+        public CliCommandResult DisableClamp(int? index) => ApplyCliClamp(index, _ => false);
+
+        public CliCommandResult ToggleClamp(int? index)
+        {
+            if (index.HasValue) return ApplyCliClamp(index, m => !m.EffectiveClampTarget);
+
+            // Unindexed toggle must mirror ToggleAllClamps(): compute ONE shared target from
+            // all clampable monitors and apply that same value everywhere. Toggling each
+            // monitor independently would drive mixed states in opposite directions, the exact
+            // opposite of the hotkey behavior this command promises to match.
+            var clampable = Monitors.Where(m => m.CanClamp).ToList();
+            var turnOn = clampable.Any(m => !m.EffectiveClampTarget);
+            return ApplyCliClamp(null, _ => turnOn);
+        }
+
+        private CliCommandResult ApplyCliClamp(int? index, Func<MonitorData, bool> targetFor)
+        {
+            if (index.HasValue)
+            {
+                var monitor = Monitors.FirstOrDefault(m => m.Number == index.Value);
+                if (monitor == null)
+                {
+                    return new CliCommandResult(3, "No monitor with index " + index.Value);
+                }
+
+                var outcome = monitor.SetClampedFromCli(targetFor(monitor));
+                return CliCommandResult.FromOutcome(outcome, monitor);
+            }
+
+            // Unindexed command: apply to every monitor, aggregating per the documented
+            // policy - skipped (CanClamp == false) monitors are listed but only fail the call
+            // when nothing at all was processed; any real Error fails the whole call.
+            var results = Monitors.ToList()
+                .Select(m => new { Monitor = m, Outcome = m.SetClampedFromCli(targetFor(m)) })
+                .ToList();
+
+            if (results.Count == 0)
+            {
+                return new CliCommandResult(3, "No monitors found");
+            }
+
+            var lines = results
+                .Select(r => "#" + r.Monitor.Number + " " + r.Monitor.Name + ": " +
+                             CliCommandResult.DescribeOutcome(r.Outcome, r.Monitor))
+                .ToList();
+            var text = string.Join("; ", lines);
+
+            if (results.Any(r => r.Outcome == ClampCommandOutcome.Error))
+            {
+                return new CliCommandResult(5, text);
+            }
+
+            // All monitors unavailable and none already in the requested state: nothing was
+            // done at all - report code 4 with per-monitor reasons instead of a silent success.
+            if (results.All(r => r.Outcome == ClampCommandOutcome.Unavailable))
+            {
+                return new CliCommandResult(4, text);
+            }
+
+            return new CliCommandResult(0, text);
+        }
+
+        public CliCommandResult GetStatus(int? index)
+        {
+            var monitors = index.HasValue
+                ? Monitors.Where(m => m.Number == index.Value).ToList()
+                : Monitors.ToList();
+
+            if (monitors.Count == 0)
+            {
+                return index.HasValue
+                    ? new CliCommandResult(3, "No monitor with index " + index.Value)
+                    : new CliCommandResult(3, "No monitors found");
+            }
+
+            var lines = monitors.Select(m =>
+                "#" + m.Number + " " + m.Name + ": " +
+                (m.Clamped ? "clamped" : "not clamped") +
+                (m.IsClampPending ? ", applying" : "") +
+                (!m.CanClamp ? " (" + m.ClampOffReason + ")" : ""));
+            return new CliCommandResult(0, string.Join("; ", lines));
+        }
+
+        // Loads the root-level settings that are not per-monitor: hotkey, tray tip flag and
+        // main window geometry.
         private void LoadHotkeySettings()
         {
             if (!File.Exists(_configPath)) return;
@@ -130,6 +236,58 @@ namespace novideo_srgb
             catch
             {
             }
+
+            LoadWindowGeometry();
+        }
+
+        // Read separately from the hotkey block: a single corrupted geometry attribute must not
+        // abort the whole load and silently reset the hotkey/tray-tip settings with it.
+        private void LoadWindowGeometry()
+        {
+            try
+            {
+                var root = XElement.Load(_configPath);
+
+                WindowLeft = ReadDouble(root, "window_left");
+                WindowTop = ReadDouble(root, "window_top");
+                WindowWidth = ReadDouble(root, "window_width");
+                WindowHeight = ReadDouble(root, "window_height");
+
+                var maximizedAttr = root.Attribute("window_maximized");
+                bool maximized;
+                if (maximizedAttr != null && bool.TryParse(maximizedAttr.Value, out maximized))
+                {
+                    WindowMaximized = maximized;
+                }
+
+                var sortColumnAttr = root.Attribute("sort_column");
+                if (sortColumnAttr != null)
+                {
+                    SortColumn = sortColumnAttr.Value;
+                }
+
+                var sortDescendingAttr = root.Attribute("sort_descending");
+                bool descending;
+                if (sortDescendingAttr != null && bool.TryParse(sortDescendingAttr.Value, out descending))
+                {
+                    SortDescending = descending;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static double? ReadDouble(XElement root, string name)
+        {
+            var attr = root.Attribute(name);
+            if (attr == null) return null;
+            double value;
+            // Invariant parsing: the value is written with XAttribute's invariant formatting,
+            // so a machine with a comma decimal separator must not fail to read it back.
+            return double.TryParse(attr.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                ? value
+                : (double?)null;
         }
 
         private void LogStartupStatus()
@@ -282,6 +440,16 @@ namespace novideo_srgb
 
         public void SaveConfig()
         {
+            SaveConfig(fatalOnError: true);
+        }
+
+        // fatalOnError:false is for saves the user did not explicitly ask for (the window
+        // geometry write that now happens on every close, including hide-to-tray). Losing a
+        // window size to a transient file lock is not worth a modal error box plus an
+        // Environment.Exit that would skip the Closed handler and leak the tray icon and the
+        // global hotkey registration.
+        public void SaveConfig(bool fatalOnError)
+        {
             try
             {
                 // Monitors not currently connected (e.g. a laptop undocked, or a display
@@ -310,6 +478,21 @@ namespace novideo_srgb
                             new XAttribute("target", x.Target),
                             new XAttribute("disable_optimization", x.DisableOptimization))));
 
+                // Window geometry must be written here, as part of the same element that is
+                // rebuilt from scratch on every save - writing it anywhere else would make it
+                // disappear on the next unrelated SaveConfig() call.
+                AddGeometry(xElem, "window_left", WindowLeft);
+                AddGeometry(xElem, "window_top", WindowTop);
+                AddGeometry(xElem, "window_width", WindowWidth);
+                AddGeometry(xElem, "window_height", WindowHeight);
+                xElem.Add(new XAttribute("window_maximized", WindowMaximized));
+
+                if (!string.IsNullOrEmpty(SortColumn))
+                {
+                    xElem.Add(new XAttribute("sort_column", SortColumn));
+                    xElem.Add(new XAttribute("sort_descending", SortDescending));
+                }
+
                 if (offlineEntries != null)
                 {
                     xElem.Add(offlineEntries);
@@ -320,8 +503,17 @@ namespace novideo_srgb
             catch (Exception ex)
             {
                 Logger.Log(LogLevel.Error, "Failed to save config: " + ex.Message);
+                if (!fatalOnError) return;
                 MessageBox.Show(ex.Message + "\n\nTry extracting the program elsewhere.");
                 Environment.Exit(1);
+            }
+        }
+
+        private static void AddGeometry(XElement element, string name, double? value)
+        {
+            if (value.HasValue)
+            {
+                element.Add(new XAttribute(name, value.Value));
             }
         }
     }

@@ -13,6 +13,18 @@ using NvAPIWrapper.Native.Display;
 
 namespace novideo_srgb
 {
+    // Outcome of a CLI-initiated clamp command, mapped to process exit codes by the
+    // pipe server (see plan: 0 = Applied/AlreadyInState/AcceptedPending, 4 = Unavailable,
+    // 5 = Error).
+    public enum ClampCommandOutcome
+    {
+        Applied,
+        AlreadyInState,
+        AcceptedPending,
+        Unavailable,
+        Error
+    }
+
     public class MonitorData : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler PropertyChanged;
@@ -175,7 +187,7 @@ namespace novideo_srgb
             }
         }
 
-        private void HandleClampException(Exception e, string sourceSuffix = "")
+        private void HandleClampException(Exception e, string sourceSuffix = "", bool blockingPopup = true)
         {
             Logger.Log(LogLevel.Error, "Failed to apply clamp for " + Name + sourceSuffix + ": " + e);
             // A pending retry loop must not survive this path: intent is being reverted to the
@@ -186,7 +198,20 @@ namespace novideo_srgb
             ClampSdr = _clamped;
             _viewModel.SaveConfig();
             OnPropertyChanged(nameof(Clamped));
-            TopMostMessageBox.Show(e.Message);
+            if (blockingPopup)
+            {
+                TopMostMessageBox.Show(e.Message);
+            }
+            else
+            {
+                // CLI path: the pipe server is waiting on a blocking Dispatcher.Invoke for the
+                // command result - showing the modal synchronously here would stall the IPC
+                // response until the user dismisses the popup (the client would hit its request
+                // timeout instead of receiving the documented error code). Schedule the popup
+                // separately so the result returns immediately.
+                Application.Current.Dispatcher.BeginInvoke(
+                    new Action(() => TopMostMessageBox.Show(e.Message)));
+            }
         }
 
         public bool IsClampPending => _pendingClampTarget != null;
@@ -202,29 +227,37 @@ namespace novideo_srgb
             var targetChanged = _pendingClampTarget != target;
             _pendingClampTarget = target;
 
-            if (manual)
+            if (!alreadyPending || targetChanged)
             {
-                // A fresh manual action restarts the popup grace window and re-arms the popup -
-                // unless one is literally on screen right now (a hotkey press can be dispatched
-                // while the modal pumps messages), in which case stacking a second popup on top
-                // of the first would only add noise.
-                _pendingIsManual = true;
+                // A brand-new intent (first pending, or the desired direction actually changed)
+                // takes over the manual status and timers from whichever caller triggered it.
+                // This is what lets a CLI-triggered (manual:false) direction change silence a
+                // popup countdown inherited from an earlier hotkey/checkbox (manual:true)
+                // pending, and vice versa. Retry counters restart too - they track attempts
+                // toward a specific target, and the target just changed.
+                _pendingIsManual = manual;
                 _pendingSince = DateTime.Now;
-                _pendingPopupShown = _pendingPopupOnScreen;
-            }
-            else if (!alreadyPending)
-            {
-                _pendingIsManual = false;
-                _pendingSince = DateTime.Now;
-                _pendingPopupShown = false;
-            }
-
-            if (!alreadyPending)
-            {
+                _pendingPopupShown = manual ? _pendingPopupOnScreen : false;
                 _pendingRetryCount = 0;
                 _pendingNon104Failures = 0;
                 _pendingLastProgressLog = DateTime.Now;
             }
+            else if (manual)
+            {
+                // Same target, already pending, but the user performed a FRESH manual action
+                // (Reapply button, Advanced confirm, repeated hotkey in the same direction):
+                // promote the pending to manual and restart the popup grace window - unless a
+                // popup is literally on screen right now (a hotkey press can be dispatched
+                // while the modal pumps messages), in which case stacking a second popup on
+                // top of the first would only add noise. This preserves the shipped v4.5
+                // behavior; only same-target background re-entries (display-config event
+                // storms) are ignored below.
+                _pendingIsManual = true;
+                _pendingSince = DateTime.Now;
+                _pendingPopupShown = _pendingPopupOnScreen;
+            }
+            // else: background call (manual:false) with the same target - display-config event
+            // storm noise - must not touch the manual flag or timers of an in-flight pending.
 
             // Display-config event storms (e.g. fullscreen transitions) re-enter here several
             // times per second with the same target; log only when something actually changed.
@@ -324,15 +357,107 @@ namespace novideo_srgb
             OnPropertyChanged(nameof(Clamped));
         }
 
-        public bool Clamped
+        // The state the driver has actually applied. Read-only on purpose: every write goes
+        // through ClampRequested, so intent-based semantics cannot be bypassed by accident.
+        public bool Clamped => _clamped;
+
+        // What the checkbox (and the tray menu tick) binds to. Deliberately NOT the raw applied
+        // state: while a -104 retry is in flight this reports the state the user asked for, so
+        // clicking the checkbox or pressing the hotkey always gives immediate visible feedback
+        // and a second press visibly flips the request back.
+        //
+        // The row colour carries the other half of the story - green means the request is
+        // actually applied, orange means it is still being retried - so "ticked + orange" reads
+        // as "you asked for on, still applying", which is exactly the truth. If the change
+        // ultimately fails for a real (non--104) reason, HandleClampException resets the intent
+        // to the actual state and the tick snaps back on its own.
+        public bool ClampRequested
         {
+            get => EffectiveClampTarget;
             set => SetClamped(value, "");
-            get => _clamped;
         }
 
         public void SetClampedFromHotkey(bool value)
         {
             SetClamped(value, " via hotkey");
+        }
+
+        // CLI entry point: same underlying logic as SetClamped, but with a structured result
+        // for the pipe response, no popup scheduling on -104 (manual:false - a script must not
+        // spawn a desktop popup), and a non-blocking popup for real errors (the pipe server is
+        // waiting on Dispatcher.Invoke for this return value).
+        public ClampCommandOutcome SetClampedFromCli(bool value)
+        {
+            // Full idempotency is checked BEFORE CanClamp: if both the effective state and the
+            // saved intent already match the request, this is a success with no side effects -
+            // even while CanClamp == false (e.g. HDR active). Otherwise a "disable just in
+            // case" script would fail with an error on a monitor that is already off.
+            if (EffectiveClampTarget == value && ClampSdr == value)
+                return ClampCommandOutcome.AlreadyInState;
+
+            if (!CanClamp) return ClampCommandOutcome.Unavailable;
+
+            // Persist the intent before the effective-state idempotency check: CheckForDrift()
+            // may have synced _clamped to an external change while ClampSdr still holds a stale
+            // intent - returning early without saving would leave the next ReapplyClamp() /
+            // restart applying the stale intent instead of what was just requested.
+            //
+            // Non-fatal on purpose: the fatal overload shows a modal box and calls
+            // Environment.Exit, which on this path would run inside the Dispatcher.Invoke the
+            // pipe server is blocked on (the client would time out with code 7 instead of the
+            // documented result) and would then kill the process past the Closed handler,
+            // leaking the tray icon and the global hotkey registration. The intent is already
+            // in memory; failing to write it to disk is not worth that.
+            ClampSdr = value;
+            _viewModel.SaveConfig(fatalOnError: false);
+
+            if (EffectiveClampTarget == value)
+            {
+                // ClampSdr is an input of ClampOffReason, so republish the derived properties
+                // even on this early return. Currently inert (the tooltip is null whenever
+                // CanClamp is true), but leaving a state change unannounced is exactly the
+                // kind of thing that turns into a stale-UI bug the next time the tooltip
+                // conditions change.
+                OnPropertyChanged(nameof(Clamped));
+                return ClampCommandOutcome.AlreadyInState;
+            }
+
+            // Same reasoning as in SetClamped: cancel a pending change whose direction was
+            // undone, rather than replacing it with another redundant write. Only reachable
+            // while a pending exists - without one EffectiveClampTarget equals _clamped, so
+            // the check above has already returned.
+            if (IsClampPending && value == _clamped)
+            {
+                Logger.Log(LogLevel.Info,
+                    "Pending clamp change for " + Name + " via CLI cancelled; monitor is already " +
+                    (value ? "clamped" : "unclamped"));
+
+                ClearPending();
+                OnPropertyChanged(nameof(Clamped));
+                return ClampCommandOutcome.AlreadyInState;
+            }
+
+            try
+            {
+                UpdateClamp(value);
+            }
+            catch (NvApiException e) when (e.Status == -104)
+            {
+                BeginPendingClamp(value, manual: false, " via CLI");
+                return ClampCommandOutcome.AcceptedPending;
+            }
+            catch (Exception e)
+            {
+                HandleClampException(e, " via CLI", blockingPopup: false);
+                return ClampCommandOutcome.Error;
+            }
+
+            _clamped = value;
+            ClearPending();
+            Logger.Log(value ? LogLevel.Success : LogLevel.Off,
+                (value ? "Clamp enabled for " : "Clamp disabled for ") + Name + " via CLI");
+            OnPropertyChanged(nameof(Clamped));
+            return ClampCommandOutcome.Applied;
         }
 
         private void SetClamped(bool value, string sourceSuffix)
@@ -341,6 +466,27 @@ namespace novideo_srgb
             // startup reapply after a restart) must still know what the user wanted.
             ClampSdr = value;
             _viewModel.SaveConfig();
+
+            // Cancelling a pending change by asking for the state the driver has already
+            // applied: just drop the pending retry, there is nothing to write. Without this,
+            // changing your mind mid-retry would queue yet another redundant write that the
+            // driver is likely to keep rejecting, leaving the row orange long after the
+            // request was undone.
+            //
+            // Deliberately gated on IsClampPending: a "cold" repeat of the current state (no
+            // pending) must still go through UpdateClamp, because that rewrite is the only way
+            // a toggle can restore OUR colour matrix when something external changed it -
+            // _clamped only tracks whether a conversion is active, not whose it is.
+            if (IsClampPending && value == _clamped)
+            {
+                Logger.Log(LogLevel.Info,
+                    "Pending clamp change for " + Name + sourceSuffix +
+                    " cancelled; monitor is already " + (value ? "clamped" : "unclamped"));
+
+                ClearPending();
+                OnPropertyChanged(nameof(Clamped));
+                return;
+            }
 
             try
             {
@@ -368,13 +514,20 @@ namespace novideo_srgb
         {
             var clamped = CanClamp && ClampSdr;
 
+            // CanClamp is computed from Advanced-dialog settings (UseIcc/ProfilePath/Target),
+            // none of which are observable on their own - this reapply is the only thing that
+            // republishes it. Raise it up front rather than inside the try: if UpdateClamp
+            // throws, the checkbox would otherwise keep its stale enabled state while the
+            // tooltip (refreshed from the Clamped/IsClampPending notifications on the error
+            // paths) already reports the new one, i.e. the two would contradict each other.
+            OnPropertyChanged(nameof(CanClamp));
+
             try
             {
                 var previous = _clamped;
                 UpdateClamp(clamped);
                 _clamped = clamped;
                 ClearPending();
-                OnPropertyChanged(nameof(CanClamp));
                 OnPropertyChanged(nameof(Clamped));
 
                 if (clamped != previous)
@@ -482,10 +635,35 @@ namespace novideo_srgb
                 if (IsClampPending) return "applying, driver busy";
                 if (!IsActive) return "not connected";
                 if (HdrActive) return "HDR active";
-                if (!ClampSdr) return "not configured";
+                // The reasons that actually make CanClamp false must come before the
+                // "not configured" check: CanClamp does not depend on ClampSdr at all, so a
+                // monitor whose EDID already matches the target (or an ICC mode with no
+                // profile) would otherwise be reported as merely "not configured" - sending
+                // the user off to configure a checkbox that cannot be enabled at all.
                 if (UseEdid && EdidColorSpace.Equals(TargetColorSpace)) return "already native target color space";
                 if (UseIcc && ProfilePath == "") return "no ICC profile selected";
+                if (!ClampSdr) return "not configured";
                 return "unknown";
+            }
+        }
+
+        // Tooltip shown on the Clamped cell. Null means "no tooltip" - WPF simply shows
+        // nothing, so the hint only appears when there is actually something to explain.
+        //
+        // Note the two distinct cases: while a -104 retry is pending the checkbox stays
+        // ENABLED on purpose (a new command is allowed to override the pending one, exactly
+        // like the hotkey), so the pending text must not claim the clamp is "unavailable".
+        public string ClampStatusTooltip
+        {
+            get
+            {
+                if (IsClampPending)
+                {
+                    return "Applying - the NVIDIA driver rejected the previous attempt; " +
+                           "retrying automatically in the background.";
+                }
+
+                return CanClamp ? null : "Clamp is unavailable: " + ClampOffReason + ".";
             }
         }
 
@@ -565,6 +743,18 @@ namespace novideo_srgb
         private void OnPropertyChanged([CallerMemberName] string name = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+            // ClampOffReason/ClampStatusTooltip are computed properties with no backing field,
+            // so nothing raises PropertyChanged for them on their own. Deriving the
+            // notification here instead of at every call site means a newly added
+            // Clamped/CanClamp/IsClampPending notification can never forget to refresh the
+            // tooltip and leave a stale reason on screen.
+            if (name == nameof(Clamped) || name == nameof(CanClamp) || name == nameof(IsClampPending))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ClampOffReason)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ClampStatusTooltip)));
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ClampRequested)));
+            }
         }
     }
 }
