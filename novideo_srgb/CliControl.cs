@@ -34,6 +34,18 @@ namespace novideo_srgb
         public int? Index;
         public string Error;
 
+        // Modifier for a normal GUI start, like -minimize: forces WPF onto the software
+        // rendering path before any window exists. Deliberately NOT a CliCommandType - the
+        // "only one command per invocation" and "-minimize cannot be combined" checks below
+        // key off Command, and a modifier must not trip either of them.
+        public bool SoftwareRender;
+
+        // Set only by a process restarting itself after a render thread failure. The old
+        // instance may still hold the single-instance mutex for a moment, so this start is
+        // allowed to wait for it - an ordinary launch is not, because there the mutex is held
+        // by a healthy instance that should be activated immediately.
+        public bool RestartHandover;
+
         public bool IsControlCommand =>
             Command == CliCommandType.Enable || Command == CliCommandType.Disable ||
             Command == CliCommandType.Toggle || Command == CliCommandType.Status;
@@ -42,6 +54,7 @@ namespace novideo_srgb
         {
             var result = new CliArguments();
             var minimizeSeen = false;
+            var softwareRenderSeen = false;
 
             for (var i = 0; i < args.Length; i++)
             {
@@ -51,6 +64,15 @@ namespace novideo_srgb
                 {
                     case "-minimize":
                         minimizeSeen = true;
+                        continue;
+                    case "--software-render":
+                        softwareRenderSeen = true;
+                        result.SoftwareRender = true;
+                        continue;
+                    case "--restart-handover":
+                        // Internal: passed by a process restarting itself. Not listed in the
+                        // help output because it is meaningless on a hand-typed command line.
+                        result.RestartHandover = true;
                         continue;
                     case "--help":
                         type = CliCommandType.Help;
@@ -105,6 +127,14 @@ namespace novideo_srgb
             if (minimizeSeen && result.Command != CliCommandType.None)
             {
                 result.Error = "-minimize cannot be combined with " + "--" +
+                               result.Command.ToString().ToLowerInvariant();
+            }
+
+            // Same reasoning for --software-render: it only affects how this process renders
+            // its own window, which a control command never creates.
+            if (softwareRenderSeen && result.Command != CliCommandType.None)
+            {
+                result.Error = "--software-render cannot be combined with " + "--" +
                                result.Command.ToString().ToLowerInvariant();
             }
 
@@ -173,6 +203,16 @@ namespace novideo_srgb
             "         Without an index the command applies to all monitors.\r\n" +
             "\r\n" +
             "Control commands require an already running instance (they do not start one).\r\n" +
+            "\r\n" +
+            "Startup options (these start the GUI, they are not control commands and return\r\n" +
+            "no exit code of their own):\r\n" +
+            "\r\n" +
+            "  novideo_srgb.exe -minimize          Start hidden in the tray\r\n" +
+            "  novideo_srgb.exe --software-render  Start with GPU rendering disabled\r\n" +
+            "\r\n" +
+            "  --software-render draws the window on the CPU. Use it if the window stays\r\n" +
+            "  blank or never redraws after a display driver problem. The two options can be\r\n" +
+            "  combined; neither can be combined with a control command.\r\n" +
             "\r\n" +
             "Exit codes:\r\n" +
             "  0  success (including \"already in requested state\" and accepted-but-retrying)\r\n" +

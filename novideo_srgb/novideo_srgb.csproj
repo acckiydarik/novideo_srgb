@@ -147,6 +147,8 @@
       <DependentUpon>HotkeyWindow.xaml</DependentUpon>
     </Compile>
     <Compile Include="Novideo.cs" />
+    <Compile Include="RenderThreadFailure.cs" />
+    <Compile Include="RestartGuard.cs" />
     <Compile Include="AdvancedWindow.xaml.cs">
       <DependentUpon>AdvancedWindow.xaml</DependentUpon>
     </Compile>

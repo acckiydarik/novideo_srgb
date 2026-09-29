@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Windows;
@@ -18,6 +19,34 @@ namespace novideo_srgb
 
         private static readonly string StatePath =
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "log_window.xml");
+
+        /// <summary>
+        /// When the log window was last closed. The main window needs this to decide whether
+        /// any errors have arrived since the user last looked at them, so reading it lives
+        /// here rather than being duplicated against the same file.
+        /// </summary>
+        public static DateTime ReadLastViewed()
+        {
+            try
+            {
+                if (!File.Exists(StatePath)) return DateTime.MinValue;
+
+                var attr = XElement.Load(StatePath).Attribute("lastViewed");
+                if (attr == null) return DateTime.MinValue;
+
+                DateTime value;
+                return DateTime.TryParse(attr.Value, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out value)
+                    ? value
+                    : DateTime.MinValue;
+            }
+            catch
+            {
+                // Never seen before, or unreadable: treat everything as new rather than
+                // silently hiding errors.
+                return DateTime.MinValue;
+            }
+        }
 
         public LogWindow()
         {
@@ -51,8 +80,17 @@ namespace novideo_srgb
         private void UpdateStatsText()
         {
             var count = Logger.Entries.Count;
-            var sizeKb = Logger.GetLogFileSizeBytes() / 1024.0;
-            StatsText.Text = count + " entries, " + sizeKb.ToString("F1") + " KB";
+            StatsText.Text = count + " / " + Logger.MaxLoadedEntries + " entries, " +
+                             FormatSize(Logger.GetLogFileSizeBytes());
+        }
+
+        // The byte count covers every rotated file on disk, not just what is loaded, so it has
+        // to scale past KB once a few days of history accumulate.
+        private static string FormatSize(long bytes)
+        {
+            return bytes >= 1024 * 1024
+                ? (bytes / 1024.0 / 1024.0).ToString("F1") + " MB"
+                : (bytes / 1024.0).ToString("F1") + " KB";
         }
 
         private class NewEntryGroupKeyConverter : IValueConverter
@@ -146,6 +184,19 @@ namespace novideo_srgb
             }
         }
 
+        private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Directory.CreateDirectory(Logger.LogDirectoryPath);
+                Process.Start("explorer.exe", "\"" + Logger.LogDirectoryPath + "\"");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Failed to open the logs folder: " + ex.Message);
+            }
+        }
+
         private void ExportButton_Click(object sender, RoutedEventArgs e)
         {
             var dialog = new Microsoft.Win32.SaveFileDialog
@@ -158,12 +209,20 @@ namespace novideo_srgb
 
             try
             {
-                var lines = new string[Logger.Entries.Count];
+                // Header first: the export only covers what the window holds, which is capped
+                // at Logger.MaxLoadedEntries. Without saying so, a file exported during an
+                // incident would look like the complete history while silently missing the
+                // older half of it.
+                var lines = new string[Logger.Entries.Count + 1];
+                lines[0] = "# novideo_srgb log export - " + Logger.Entries.Count + " of at most " +
+                           Logger.MaxLoadedEntries + " entries kept in the window. " +
+                           "Full history: " + Logger.LogDirectoryPath;
+
                 for (var i = 0; i < Logger.Entries.Count; i++)
                 {
                     var entry = Logger.Entries[i];
-                    lines[i] = entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss") + " [" +
-                               entry.Level.ToString().ToUpper() + "] " + entry.Message;
+                    lines[i + 1] = entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss") + " [" +
+                                   entry.Level.ToString().ToUpper() + "] " + entry.Message;
                 }
 
                 File.WriteAllLines(dialog.FileName, lines);

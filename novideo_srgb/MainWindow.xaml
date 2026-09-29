@@ -15,7 +15,15 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                 <Button Content="About" Width="75" Click="AboutButton_Click" />
                 <Button Content="Tip" Width="75" Margin="6,0,0,0" Click="TipButton_Click" />
-                <Button Content="Logs" Width="75" Margin="6,0,0,0" Click="LogsButton_Click" />
+                <Button x:Name="LogsButton" Width="75" Margin="6,0,0,0" Click="LogsButton_Click"
+                        ToolTip="{Binding ElementName=LogsButton, Path=Tag}">
+                    <!-- The Aero2 button chrome paints over Background and overrides it on
+                         hover, so the "new errors" state is carried by the text itself: a
+                         count, plus a red bold foreground. The count alone is readable
+                         without relying on colour. -->
+                    <TextBlock x:Name="LogsButtonText" Text="Logs" VerticalAlignment="Center"
+                               HorizontalAlignment="Center" />
+                </Button>
                 <Button Content="Hotkey" Width="75" Margin="6,0,0,0" Click="HotkeyButton_Click" />
             </StackPanel>
             <WrapPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right">
@@ -35,11 +43,16 @@
                                  Color="Transparent" />
                 <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="Transparent" />
                 <Style TargetType="{x:Type DataGridCell}">
+                    <!-- The custom template below replaces the stock Border, which is what
+                         normally provides the gap between the text and the column edge, so the
+                         padding has to be reinstated explicitly. -->
+                    <Setter Property="Padding" Value="6,0" />
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="{x:Type DataGridCell}">
                                 <Grid Background="{TemplateBinding Background}">
-                                    <ContentPresenter VerticalAlignment="Center" />
+                                    <ContentPresenter VerticalAlignment="Center"
+                                                      Margin="{TemplateBinding Padding}" />
                                 </Grid>
                             </ControlTemplate>
                         </Setter.Value>
@@ -64,7 +77,17 @@
             </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="#" Binding="{Binding Number}" IsReadOnly="True" />
-                <DataGridTextColumn Header="Name" Binding="{Binding Name}" IsReadOnly="True" />
+                <!-- Auto-sizes to the longest monitor name, with a ceiling so a corrupted EDID
+                     cannot push the other columns off the window. Real names come from a
+                     13-byte EDID descriptor, so 200px is pure insurance. -->
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" IsReadOnly="True" MaxWidth="200">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                            <Setter Property="ToolTip" Value="{Binding Name}" />
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
                 <DataGridTextColumn Header="Dithering" Width="*" Binding="{Binding DitherString}" IsReadOnly="True" />
                 <DataGridTemplateColumn>
                     <DataGridTemplateColumn.CellTemplate>

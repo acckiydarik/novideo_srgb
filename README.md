@@ -42,7 +42,8 @@ If you want to run it on boot, you can enable the "Run at startup" checkbox, whi
 * **Clamped row highlight** — active clamps are highlighted green in the monitor list.
 * **Pending state in the UI** — a change still waiting for the driver shows an orange row and a dimmed checkbox.
 * **Reason tooltips** — hovering the "Clamped" checkbox explains why it is unavailable or still being applied.
-* **Log window** — history of clamp changes, startup checks and NVAPI errors, with export (`Logs` button, or the tray menu).
+* **Log window** — history of clamp changes, startup checks and NVAPI errors, with export (`Logs` button, or the tray menu). Log files rotate daily and are kept for 30 days; the window shows the most recent 6000 entries and has an `Open folder` button for the full history.
+* **Error indicator** — the `Logs` button shows a red count when errors have been logged since you last opened the log window, and returns to normal once you close it.
 * **Resizable window with saved layout** — resize, maximize and sort columns; size, position, maximized state and column sorting are restored on the next start.
 * **Close to tray** — the X button hides to the tray instead of quitting; minimize keeps standard taskbar behavior.
 * **Single instance activation** — launching the app again brings the existing window to the front.
@@ -50,6 +51,7 @@ If you want to run it on boot, you can enable the "Run at startup" checkbox, whi
 * **Auto-reapply after monitor standby** — the clamp is restored when a sleeping monitor wakes up ([upstream issue #46](https://github.com/ledoge/novideo_srgb/issues/46)).
 * **Settings preserved for disconnected monitors** — settings of a temporarily unplugged display are kept in the config.
 * **Automatic retry on driver rejection** — rejected clamp changes are retried in the background instead of raising an error; see "Known issues".
+* **Recovery from display driver failures** — if the WPF render thread dies (typically when a fullscreen game releases the GPU), the application restarts itself and restores its state; see "Known issues".
 * **Update check** — the About window checks GitHub for a newer release when opened. Nothing is sent or downloaded automatically.
 
 # Command line
@@ -67,6 +69,15 @@ novideo_srgb.exe --status [index]   Print clamp state without changing it
 
 `index` is the 1-based monitor number shown in the `#` column. Without it, the command applies to all monitors, matching the global hotkey. Control commands require a running instance and never start one; run `--help` for the full list of exit codes.
 
+Two options control how the application starts instead of controlling a running one. They do not use the exit codes above, and neither can be combined with a control command:
+
+```
+novideo_srgb.exe -minimize          Start hidden in the tray
+novideo_srgb.exe --software-render  Start with GPU rendering disabled
+```
+
+`--software-render` draws the window on the CPU. Use it if the window stays blank or never redraws after a display driver problem — see "Known issues". The clamp itself is unaffected, since it is applied by the driver rather than drawn by the application.
+
 This is a GUI executable, so an interactive `cmd`/PowerShell prompt returns immediately without waiting for it. Batch files and Task Scheduler work as expected; for interactive use run it via `start /wait novideo_srgb.exe --status` or `Start-Process -Wait`.
 
 # Known issues
@@ -77,6 +88,7 @@ This is a GUI executable, so an interactive `cmd`/PowerShell prompt returns imme
 
 * The color space transform does not get applied properly to the mouse cursor, which results in it having wrong gamma and colors. This should be hardly noticeable with the default Windows cursor. Workaround: Force software rendering of the cursor, e.g. using [SoftCursor](https://www.monitortests.com/forum/Thread-SoftCursor).
 
+* Windows can tear down the graphics stack under a running application — most often when a fullscreen game exits or a display driver resets. When that happens, WPF marks its composition channel dead and every window operation from then on throws, so the window stops redrawing while the process keeps running. This cannot be repaired from inside the process: switching to software rendering, recreating the window and waiting it out were all measured and none of them restore the channel (the same conclusion the WPF team documents in [dotnet/wpf#10192](https://github.com/dotnet/wpf/issues/10192)). This fork detects the failure and restarts itself, preserving the clamp state, the tray icon, the hotkey and the window layout; the replacement process starts with GPU rendering disabled, since the GPU path is what just failed. If a second failure follows within ten minutes, restarting is clearly not helping, so the application stays up in a degraded state instead of looping — the window will not redraw, but the clamp, the tray icon, the hotkey and the command line keep working, and the next start uses software rendering automatically.
 * Windows HDR is handled properly, but NVAPI HDR, which some applications use to output HDR even though Windows HDR is off, will result in wrong colors while the clamp is active. To work around this, you can either enable Windows HDR or disable the clamp manually before launching such applications.
 
 # Dithering

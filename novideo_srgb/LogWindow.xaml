@@ -18,11 +18,15 @@
     </Window.Resources>
     <DockPanel Margin="6">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
-            <Button Content="Clear" Width="75" Click="ClearButton_Click" />
+            <Button Content="Open folder" Width="85" Click="OpenFolderButton_Click" />
             <Button Content="Export..." Width="75" Margin="6,0,0,0" Click="ExportButton_Click" />
+            <!-- Destructive action kept away from the two read-only ones so it is not hit by
+                 muscle memory. -->
+            <Button Content="Clear" Width="75" Margin="20,0,0,0" Click="ClearButton_Click" />
             <TextBlock x:Name="StatsText" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="Gray" />
         </StackPanel>
         <ListView x:Name="LogListView" ItemsSource="{Binding Source={StaticResource GroupedLogs}}"
+                  VirtualizingPanel.IsVirtualizingWhenGrouping="True"
                   ScrollViewer.ScrollChanged="LogListView_ScrollChanged">
             <ListView.ItemTemplate>
                 <DataTemplate>

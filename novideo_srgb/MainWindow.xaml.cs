@@ -20,6 +20,11 @@ namespace novideo_srgb
         private readonly MainViewModel _viewModel;
         private bool _exitRequested;
         private bool _hideToTrayPending;
+        private bool _systemResourcesReleased;
+
+        // Cut-off for "new" errors on the Logs button: anything logged after the moment the
+        // user last closed the log window.
+        private DateTime _lastViewedErrors = DateTime.MinValue;
 
         // Last state the window was actually shown in. Needed because WindowState is
         // Minimized while hidden in the tray (and while merely minimized to the taskbar), so
@@ -86,6 +91,7 @@ namespace novideo_srgb
 
             InitializeHotkey();
             InitializeTrayIcon();
+            InitializeLogsButton();
 
             if (startedMinimized)
             {
@@ -350,7 +356,51 @@ namespace novideo_srgb
             {
                 Owner = this
             };
+
+            // Reset when the window closes, not when it opens: LogWindow writes the new
+            // lastViewed stamp on close, and an error arriving while the user reads the log
+            // should still count as unseen until they close it.
+            window.Closed += delegate { UpdateLogsButtonState(); };
             window.Show();
+        }
+
+        // Errors can happen while the user is not looking - the only way to notice them today
+        // is to open the log window on a hunch. The button carries two signals: a count in the
+        // text, which stays readable without colour, and a red bold foreground.
+        private void UpdateLogsButtonState()
+        {
+            _lastViewedErrors = LogWindow.ReadLastViewed();
+            RefreshLogsButton();
+        }
+
+        private void RefreshLogsButton()
+        {
+            // Only Error counts. Warning covers routine events (driver -104 rejections, retry
+            // progress, external clamp changes) that occur during normal operation, so
+            // including them would leave the button permanently lit and meaningless.
+            var newErrors = 0;
+            foreach (var entry in Logger.Entries)
+            {
+                if (entry.Level == LogLevel.Error && entry.Timestamp > _lastViewedErrors) newErrors++;
+            }
+
+            if (newErrors == 0)
+            {
+                LogsButtonText.Text = "Logs";
+                // Fully qualified: this file also uses System.Drawing for the tray icon, and
+                // both namespaces define Brushes.
+                LogsButtonText.ClearValue(System.Windows.Controls.TextBlock.ForegroundProperty);
+                LogsButtonText.FontWeight = FontWeights.Normal;
+                LogsButton.Tag = null;
+                return;
+            }
+
+            LogsButtonText.Text = "Logs (" + newErrors + ")";
+            LogsButtonText.Foreground = System.Windows.Media.Brushes.Red;
+            LogsButtonText.FontWeight = FontWeights.Bold;
+            LogsButton.Tag = newErrors == 1
+                ? "1 new error since you last viewed the log"
+                : newErrors + " new errors since you last viewed the log";
         }
 
         private void HotkeyButton_Click(object sender, RoutedEventArgs e)
@@ -493,17 +543,102 @@ namespace novideo_srgb
             Closed += delegate
             {
                 Logger.Log(LogLevel.Info, "Application closing");
+                // Before Shutdown: a storm that was still being suppressed would otherwise lose
+                // its tally, and the log would end with three entries where hundreds occurred.
+                var aggregate = RenderThreadFailure.FlushAggregate();
+                if (aggregate != null) Logger.Log(LogLevel.Error, aggregate);
                 Logger.Shutdown();
-                UnregisterHotKey(new WindowInteropHelper(this).Handle, HotkeyId);
-                _notifyIcon.Dispose();
-                _coloredIcon.Dispose();
-                _grayIcon.Dispose();
-                _viewModel.StopDriftPoll();
-                foreach (var monitor in _observedMonitors)
-                {
-                    monitor.PropertyChanged -= Monitor_PropertyChanged;
-                }
+                ReleaseSystemResources();
             };
+        }
+
+        // Everything that must not survive into a replacement process: a leftover tray icon
+        // would linger as a ghost until hovered, and a still-registered hotkey would make the
+        // new instance fail to claim the same combination.
+        //
+        // Safe to call twice - the restart path calls it explicitly and Closed may follow.
+        private void ReleaseSystemResources()
+        {
+            if (_systemResourcesReleased) return;
+            _systemResourcesReleased = true;
+
+            Logger.Entries.CollectionChanged -= LogEntriesChanged;
+
+            try
+            {
+                UnregisterHotKey(new WindowInteropHelper(this).Handle, HotkeyId);
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                if (_notifyIcon != null)
+                {
+                    _notifyIcon.Visible = false;
+                    _notifyIcon.Dispose();
+                }
+
+                if (_coloredIcon != null) _coloredIcon.Dispose();
+                if (_grayIcon != null) _grayIcon.Dispose();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _viewModel.StopDriftPoll();
+            }
+            catch
+            {
+            }
+
+            foreach (var monitor in _observedMonitors)
+            {
+                monitor.PropertyChanged -= Monitor_PropertyChanged;
+            }
+
+            _observedMonitors.Clear();
+        }
+
+        // Called from the unhandled-exception handler once a render thread failure is
+        // confirmed. Persists state, hands every OS-level resource back, and lets the restart
+        // helper hand over to a fresh process.
+        internal void RestartAfterRenderFailure()
+        {
+            RestartGuard.RestartAfterRenderFailure(_viewModel, delegate
+            {
+                // Reading RestoreBounds and the sort descriptions only touches dependency
+                // properties - no rendering is involved, so this is safe even now.
+                try
+                {
+                    CaptureWindowGeometry();
+                    CaptureColumnSort();
+                    _viewModel.SaveConfig(fatalOnError: false);
+                }
+                catch (Exception e)
+                {
+                    Logger.Log(LogLevel.Error, "Failed to save the configuration before restart: " + e.Message);
+                }
+
+                ReleaseSystemResources();
+                CliServer.Stop();
+                App.ReleaseSingleInstanceMutex();
+            });
+        }
+
+        private void InitializeLogsButton()
+        {
+            _lastViewedErrors = LogWindow.ReadLastViewed();
+            Logger.Entries.CollectionChanged += LogEntriesChanged;
+            RefreshLogsButton();
+        }
+
+        private void LogEntriesChanged(object sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        {
+            RefreshLogsButton();
         }
 
         private void InitializeHotkey()

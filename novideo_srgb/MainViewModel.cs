@@ -48,6 +48,57 @@ namespace novideo_srgb
         public string SortColumn { get; set; }
         public bool SortDescending { get; set; }
 
+        // When the process last restarted itself after a WPF render thread failure. Used as the
+        // loop-guard: a second failure inside the guard window means restarting is not helping,
+        // so the app stays up in a degraded state instead of cycling.
+        public DateTime? LastAutoRestart { get; set; }
+
+        // Set once the loop-guard trips. Software rendering cannot repair an already-zombied
+        // partition (verified experimentally), but it does avoid the GPU path entirely on the
+        // next start, which is the only form in which this fallback works at all.
+        public bool ForceSoftwareRendering { get; set; }
+
+        // Read before any MainViewModel instance exists: the render mode has to be set before
+        // the first window is created, which happens before the view model is constructed.
+        public static bool ReadForceSoftwareRenderingFlag()
+        {
+            try
+            {
+                var path = AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+                if (!File.Exists(path)) return false;
+
+                var attr = XElement.Load(path).Attribute("force_software_rendering");
+                bool value;
+                return attr != null && bool.TryParse(attr.Value, out value) && value;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Consumes the one-shot flag. Edits the file in place rather than going through
+        // SaveConfig, which does not exist yet at this point in startup - and which would
+        // rewrite monitor entries from an empty collection if it did.
+        public static void ClearForceSoftwareRenderingFlag()
+        {
+            try
+            {
+                var path = AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+                if (!File.Exists(path)) return;
+
+                var root = XElement.Load(path);
+                var attr = root.Attribute("force_software_rendering");
+                if (attr == null) return;
+
+                attr.Remove();
+                root.Save(path);
+            }
+            catch
+            {
+            }
+        }
+
         public void MarkTrayTipShown()
         {
             if (TrayTipShown) return;
@@ -75,6 +126,12 @@ namespace novideo_srgb
             };
             _driftPollTimer.Tick += delegate
             {
+                // Release a suppressed exception storm's tally once it has gone quiet. Done
+                // from the existing poll rather than a dedicated timer, and outside the monitor
+                // loop because it is unrelated to any single monitor.
+                var aggregate = RenderThreadFailure.FlushIfQuiet();
+                if (aggregate != null) Logger.Log(LogLevel.Error, aggregate);
+
                 // Snapshot: RetryPendingClamp can show a modal popup, whose nested message loop
                 // may run UpdateMonitors (display change) and clear/rebuild Monitors mid-loop.
                 foreach (var monitor in Monitors.ToList())
@@ -271,6 +328,23 @@ namespace novideo_srgb
                 if (sortDescendingAttr != null && bool.TryParse(sortDescendingAttr.Value, out descending))
                 {
                     SortDescending = descending;
+                }
+
+                var lastRestartAttr = root.Attribute("last_auto_restart");
+                DateTime lastRestart;
+                // Round-trip parsing to match how the value is written; a machine-local format
+                // would break the loop-guard after a locale change.
+                if (lastRestartAttr != null && DateTime.TryParse(lastRestartAttr.Value,
+                        CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out lastRestart))
+                {
+                    LastAutoRestart = lastRestart;
+                }
+
+                var softwareAttr = root.Attribute("force_software_rendering");
+                bool forceSoftware;
+                if (softwareAttr != null && bool.TryParse(softwareAttr.Value, out forceSoftware))
+                {
+                    ForceSoftwareRendering = forceSoftware;
                 }
             }
             catch
@@ -491,6 +565,17 @@ namespace novideo_srgb
                 {
                     xElem.Add(new XAttribute("sort_column", SortColumn));
                     xElem.Add(new XAttribute("sort_descending", SortDescending));
+                }
+
+                if (LastAutoRestart.HasValue)
+                {
+                    xElem.Add(new XAttribute("last_auto_restart",
+                        LastAutoRestart.Value.ToString("o", CultureInfo.InvariantCulture)));
+                }
+
+                if (ForceSoftwareRendering)
+                {
+                    xElem.Add(new XAttribute("force_software_rendering", true));
                 }
 
                 if (offlineEntries != null)
